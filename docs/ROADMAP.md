@@ -5,8 +5,8 @@ point to stop and review.
 
 | Milestone | Scope | Exit criteria |
 |---|---|---|
-| **M0: Planning** | This documentation | Maintainer has reviewed the ADRs and answered OPEN_QUESTIONS |
-| **M1: Skeleton** | Cargo project, CLI (clap), config loading + `--set` + `--print-config`, driver, diagnostics. The formatter only trims trailing whitespace and normalizes newlines. | CLI tests pass; release binary built and size measured |
+| **M0: Planning** ✅ | This documentation | Maintainer has reviewed the ADRs and answered OPEN_QUESTIONS |
+| **M1: Skeleton** ✅ | Cargo project, CLI (clap), config loading + `--set` + `--print-config`, driver, diagnostics. The formatter only trims trailing whitespace and normalizes newlines. | CLI tests pass; release binary built and size measured (1.28 MB stripped, 2026-11-22) |
 | **M2: NASM front end** | Lexer, keyword tables + generator, classifier, block builder, verbatim fallback | Unit tests for every NASM.md item |
 | **M3: Layout** | Normalizer (case, operands), layout engine, emitter, safety check | Golden tests for `[indent] [labels] [instructions] [operands] [comments] [case] [alignment]` |
 | **M4: Blocks & directives** | Preprocessor/macro/struc indentation, `%if 0`, `reasm: off/on/skip`, label rewrites | Golden tests for the remaining options |

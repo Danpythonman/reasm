@@ -5,9 +5,20 @@ small binary. The first supported dialect is **NASM** (x86 / x86-64). The design
 keeps dialect-specific code separate from the shared formatter so that more
 dialects (GAS/AT&T, MASM, ...) can be added later.
 
-> **Status:** planning. There is no code yet. This repository contains the
-> requirements, architecture and decision records that the implementation will
-> follow.
+> **Status:** early development (milestone M1 of [the roadmap](docs/ROADMAP.md)).
+> The CLI, configuration system and file handling work. Formatting is limited
+> to trailing whitespace, line endings and the end of the file. NASM parsing
+> and layout come next.
+
+## Usage
+
+```sh
+cargo install --path .
+reasm file.asm src/            # format in place
+reasm --check src/             # CI: exit 1 if anything would change
+reasm --stdin-filepath f.asm < f.asm   # editors
+reasm --print-config default > reasm.toml
+```
 
 ## Why another formatter?
 

@@ -34,7 +34,7 @@ reasm/
 │   ├── lib.rs               # public API: format_str, Config, Dialect registry
 │   ├── cli/                 # argument parsing (clap derive), modes, exit codes
 │   ├── driver/              # file discovery, config resolution per file, I/O, check/diff
-│   ├── config/              # option structs, TOML loading, --set overrides, defaults, printing
+│   ├── config/              # option structs (incl. each dialect's table, e.g. [nasm]), TOML loading, --set, discovery
 │   ├── diag/                # Diagnostic, Severity, Span, rendering
 │   ├── source/              # Source text, line splitting, line-ending detection
 │   ├── ir/                  # Document, Line, Label, Body, Token, TokenKind, Block
@@ -49,7 +49,6 @@ reasm/
 │           ├── mod.rs       # impl Dialect for Nasm
 │           ├── lexer.rs
 │           ├── classify.rs  # line → Line IR, label detection, block structure
-│           ├── options.rs   # [nasm] config table
 │           └── tables/      # mnemonics (generated), registers, keywords, directives
 ├── tools/gen-tables/        # generator for the mnemonic table from NASM's insns.dat (ADR-0009)
 └── tests/
@@ -61,7 +60,12 @@ Dependency direction (an arrow means "may use"):
 
 ```
 cli → driver → { config, dialect, format, diag, source }
-dialect → { ir, diag, source, config (own options only) }
+dialect → { ir, diag, source, config (reads its own table only) }
+config  → dialect (only to validate the `dialect` name)
+
+Dialect option structs (`NasmOptions`) live in `config` rather than in each
+dialect module. `deny_unknown_fields` needs the complete `Config` type, and
+keeping it in one place avoids a config ↔ dialect dependency cycle.
 format  → { ir, config, diag }
 ir, diag, source → (nothing internal)
 ```

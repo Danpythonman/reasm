@@ -17,6 +17,9 @@ Reference: the NASM manual, chapter 3 ("The NASM Language") and chapter 4
   comment syntax, and there's no statement separator.
 - **Line continuation:** a line ending in `\` continues on the next line. reasm
   keeps the whole continued group verbatim, with no warning (ADR-0006).
+  **Verified (NASM 2.16.01):** `\` followed by spaces is *not* a continuation,
+  so trimming those spaces would change the program. reasm never trims
+  trailing whitespace after a `\` (`Dialect::trailing_whitespace_significant`).
 - Lines starting with `%` are preprocessor directives, except `%%label`,
   `%$label` and `%1`-style parameters in statement positions.
 - A line wrapped in `[...]` is a primitive directive (`[bits 64]`,
