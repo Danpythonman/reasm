@@ -3,6 +3,11 @@
 
 use std::path::Path;
 
+use crate::config::Config;
+use crate::diag::Diagnostic;
+use crate::ir::Document;
+use crate::source::Source;
+
 pub mod nasm;
 
 pub trait Dialect: Sync {
@@ -16,6 +21,11 @@ pub trait Dialect: Sync {
     /// must not be trimmed. For NASM, `\` followed by spaces is *not* a line
     /// continuation, while a bare trailing `\` is (NASM.md §1).
     fn trailing_whitespace_significant(&self, line: &str) -> bool;
+
+    /// Parses the source into the IR. Must return exactly one IR line per
+    /// source line, and never fail: what can't be parsed becomes a
+    /// verbatim line plus a warning (ADR-0006).
+    fn parse(&self, source: &Source, config: &Config, diags: &mut Vec<Diagnostic>) -> Document;
 }
 
 /// All supported dialects. The first one is the fallback.

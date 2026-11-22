@@ -51,7 +51,10 @@ NASM.md item gets at least one case.
 `cargo test -- --ignored`. Candidates (licenses permit testing, not
 redistribution):
 
-- NASM's own `test/` directory
+- NASM's own `test/` directory. Results at M2 (2026-11-22): 219 files and
+  28,096 lines, 0 W001–W003 warnings, 0 panics. 4 deliberately corrupt fuzz
+  files are rejected as invalid UTF-8. This run also found the token-pasting
+  label case (`start%1:`), now covered by tests.
 - x264 `common/x86/*.asm` and FFmpeg's `x86inc.asm`: heavy macro use, a good
   stress test
 - small hobby OS kernels (bootloaders, `-f bin`)

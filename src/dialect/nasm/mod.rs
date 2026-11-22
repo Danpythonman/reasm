@@ -1,7 +1,14 @@
-//! The NASM dialect. M1 has only the pieces the skeleton formatter needs;
-//! the lexer, classifier and keyword tables arrive in M2 (ROADMAP).
+//! The NASM dialect: lexer, keyword tables and line classifier.
 
 use super::Dialect;
+use crate::config::Config;
+use crate::diag::Diagnostic;
+use crate::ir::Document;
+use crate::source::Source;
+
+pub mod classify;
+pub mod lexer;
+pub mod tables;
 
 pub struct Nasm;
 
@@ -17,6 +24,10 @@ impl Dialect for Nasm {
     fn trailing_whitespace_significant(&self, line: &str) -> bool {
         let trimmed = line.trim_end();
         trimmed.len() != line.len() && trimmed.ends_with('\\')
+    }
+
+    fn parse(&self, source: &Source, config: &Config, diags: &mut Vec<Diagnostic>) -> Document {
+        classify::parse(source, config, diags)
     }
 }
 

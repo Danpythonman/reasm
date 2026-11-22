@@ -1,0 +1,164 @@
+#!/usr/bin/env python3
+"""Generate reasm's NASM keyword tables from a NASM source tree (ADR-0009).
+
+Usage:
+    python3 -I tools/gen-tables/gen_tables.py <nasm-source-dir> \
+        > src/dialect/nasm/tables/generated.rs
+
+Inputs (all from the NASM source distribution; the NASM version is read
+from its `version` file):
+    x86/insnsn.c       instruction names, condition codes already expanded
+    x86/regs.dat       registers, with ranges like `xmm1-15`
+    asm/tokens.dat     prefixes, size and special keywords
+    asm/directiv.dat   assembler directives
+    asm/pptok.dat      preprocessor directives
+    macros/standard.mac  standard macros (`section`, `struc`, `align`, ...)
+
+The output is deterministic: every table is lowercase, de-duplicated and
+sorted by byte value, which is what `tables::contains` binary-searches.
+"""
+
+import re
+import sys
+from pathlib import Path
+
+# Pseudo-instructions that reasm lays out as data, not as instructions.
+DATA_PSEUDO_OPS = {
+    "db", "dw", "dd", "dq", "dt", "do", "dy", "dz",
+    "resb", "resw", "resd", "resq", "rest", "reso", "resy", "resz",
+    "incbin", "equ",
+}
+
+
+def read(root: Path, rel: str) -> str:
+    return (root / rel).read_text(encoding="utf-8", errors="strict")
+
+
+def instruction_names(root: Path) -> list[str]:
+    names = re.findall(r'^\s*"([^"]+)",\s*$', read(root, "x86/insnsn.c"), re.M)
+    if len(names) < 1000:
+        sys.exit("insnsn.c: found too few instruction names; has the format changed?")
+    return names
+
+
+def registers(root: Path) -> list[str]:
+    out = []
+    for line in read(root, "x86/regs.dat").splitlines():
+        line = line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        name = line.split()[0]
+        m = re.fullmatch(r"([a-z]+)(\d+)-(\d+)([a-z]*)", name)
+        if m:
+            stem, lo, hi, suffix = m.group(1), int(m.group(2)), int(m.group(3)), m.group(4)
+            out += [f"{stem}{i}{suffix}" for i in range(lo, hi + 1)]
+        else:
+            out.append(name)
+    return out
+
+
+def token_groups(root: Path) -> dict[str, list[str]]:
+    """Maps a tokens.dat group header (e.g. 'TOKEN_SIZE') to its words."""
+    groups: dict[str, list[str]] = {}
+    current = None
+    for line in read(root, "asm/tokens.dat").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("%"):
+            current = line[1:].split(",")[0].strip()
+            groups.setdefault(current, [])
+        elif current:
+            groups[current].append(line)
+    return groups
+
+
+def directives(root: Path) -> list[str]:
+    out, active = [], False
+    for line in read(root, "asm/directiv.dat").splitlines():
+        if line.startswith("; ---"):
+            active = ("Global directives" in line) or ("Format-specific" in line)
+            continue
+        word = line.split(";", 1)[0].strip()
+        if active and word and not word.startswith("#"):
+            out.append(word)
+    return out
+
+
+def preprocessor_directives(root: Path) -> list[str]:
+    """Expands pptok.dat the way NASM's pptok.pl does."""
+    stems, tails, plain, insensitive = [], [], [], []
+    for line in read(root, "asm/pptok.dat").splitlines():
+        line = re.sub(r"\s*#.*$", "", line.strip())
+        if not line:
+            continue
+        if line.startswith("%") and line.endswith("*"):
+            stems.append(line[1:-1])
+        elif line.startswith("%") and "!" in line:
+            insensitive.append(line[1:])
+        elif line.startswith("%"):
+            plain.append(line[1:])
+        elif line.startswith("*"):
+            tails.append(line[1:])
+        # '@' lines are TASM-compatibility directives: not supported.
+    out = []
+    for stem in stems:
+        for tail in tails:
+            out += [stem + tail, stem + "n" + tail]
+    out += plain
+    for word in insensitive:
+        out += [word.replace("!", ""), word.replace("!", "i")]
+    return ["%" + w for w in out]
+
+
+def standard_macros(root: Path) -> list[str]:
+    text = read(root, "macros/standard.mac")
+    section = text.split("STD: nasm", 1)[1].split("\nSTD:", 1)[0]
+    return re.findall(r"^%imacro\s+([A-Za-z_][A-Za-z0-9_]*)", section, re.M | re.I)
+
+
+def table(name: str, doc: str, words) -> str:
+    words = sorted({w.lower() for w in words})
+    body = "".join(f'    "{w}",\n' for w in words)
+    return f"/// {doc}\npub static {name}: &[&str] = &[\n{body}];\n"
+
+
+def main() -> None:
+    if len(sys.argv) != 2:
+        sys.exit(__doc__)
+    root = Path(sys.argv[1])
+    version = read(root, "version").strip()
+
+    insns = instruction_names(root)
+    groups = token_groups(root)
+    prefixes = [w for w in groups.get("TOKEN_PREFIX", []) if w != "times"]
+    if not prefixes or "byte" not in groups.get("TOKEN_SIZE", []):
+        sys.exit("tokens.dat: unexpected format")
+
+    print(f"""// @generated by tools/gen-tables/gen_tables.py from NASM {version}.
+// Do not edit by hand; re-run the generator instead (ADR-0009).
+//
+// Derived from the NASM sources, copyright The NASM Authors,
+// used under the BSD 2-Clause license. See THIRD_PARTY_NOTICES.
+
+/// The NASM version these tables were generated from.
+pub const NASM_VERSION: &str = "{version}";
+""")
+    print(table("MNEMONICS", "Instruction mnemonics (x86/insnsn.c), without data pseudo-ops.",
+                (w for w in insns if w not in DATA_PSEUDO_OPS)))
+    print(table("DATA_PSEUDO_OPS", "Data definition pseudo-instructions and `equ`.",
+                (w for w in insns if w in DATA_PSEUDO_OPS)))
+    print(table("REGISTERS", "Register names (x86/regs.dat).", registers(root)))
+    print(table("PREFIXES", "Instruction prefixes except `times` (asm/tokens.dat).", prefixes))
+    print(table("SIZE_KEYWORDS", "Operand size keywords (asm/tokens.dat).", groups["TOKEN_SIZE"]))
+    print(table("SPECIAL_KEYWORDS", "Operand keywords such as `strict` and `rel` (asm/tokens.dat).",
+                groups["TOKEN_SPECIAL"]))
+    print(table("DIRECTIVES", "Assembler directives (asm/directiv.dat).", directives(root)))
+    print(table("PREPROCESSOR_DIRECTIVES", "Preprocessor directives (asm/pptok.dat, expanded).",
+                preprocessor_directives(root)))
+    print(table("STANDARD_MACROS", "Case-insensitive standard macros (macros/standard.mac).",
+                standard_macros(root)), end="")
+
+
+if __name__ == "__main__":
+    main()

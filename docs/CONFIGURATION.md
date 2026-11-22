@@ -152,7 +152,7 @@ nasmfmt, the default changes no case.
 | `size_keyword` | `"preserve"` | `byte … zword`, and `strict near far short rel abs nosplit`. |
 | `data` | `"preserve"` | `db … dz`, `resb … resz`, `times equ incbin align alignb`. |
 | `directive` | `"preserve"` | `section global extern bits default org cpu ...`. |
-| `preprocessor` | `"preserve"` | `%define %macro %if ...` (non-preserve values are allowed only once NASM.md §7 is verified). |
+| `preprocessor` | `"preserve"` | `%define %macro %if ...` (case-insensitive in NASM, verified with 2.16.01). |
 
 ## `[blank_lines]`
 

@@ -1,10 +1,12 @@
-//! The formatter core. In M1 it only normalizes whitespace at line ends,
-//! line endings and the end of the file; the normalizer, layout engine and
-//! safety check arrive in M3 (ROADMAP).
+//! The formatter core. Until M3 it only normalizes whitespace at line ends,
+//! line endings and the end of the file, using the parse to keep
+//! `reasm: off` regions byte for byte and to report diagnostics. The
+//! normalizer, layout engine and safety check arrive in M3 (ROADMAP).
 
 use crate::config::{Config, LineEndingStyle};
 use crate::diag::Diagnostic;
 use crate::dialect::Dialect;
+use crate::ir::{LineContent, VerbatimReason};
 use crate::source::{LineEnding, Source};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -22,31 +24,39 @@ pub fn format(src: &str, config: &Config, dialect: &dyn Dialect) -> Formatted {
     }
     .as_str();
 
-    let mut lines: Vec<&str> = source
+    let mut diagnostics = Vec::new();
+    let doc = dialect.parse(&source, config, &mut diagnostics);
+    debug_assert_eq!(doc.lines.len(), source.lines.len());
+
+    // (text, may be dropped if blank at the end of the file)
+    let mut lines: Vec<(&str, bool)> = source
         .lines
         .iter()
-        .map(|&line| {
-            if dialect.trailing_whitespace_significant(line) {
-                line
+        .zip(&doc.lines)
+        .map(|(&line, ir)| {
+            if ir.content == LineContent::Verbatim(VerbatimReason::Disabled) {
+                (line, false)
+            } else if dialect.trailing_whitespace_significant(line) {
+                (line, true)
             } else {
-                line.trim_end()
+                (line.trim_end(), true)
             }
         })
         .collect();
-    while lines.last().is_some_and(|l| l.is_empty()) {
+    while lines
+        .last()
+        .is_some_and(|(l, droppable)| *droppable && l.is_empty())
+    {
         lines.pop();
     }
 
     let mut text = String::with_capacity(src.len() + 1);
     text.push_str(source.bom_str());
-    for line in &lines {
+    for (line, _) in &lines {
         text.push_str(line);
         text.push_str(newline);
     }
-    Formatted {
-        text,
-        diagnostics: Vec::new(),
-    }
+    Formatted { text, diagnostics }
 }
 
 #[cfg(test)]
@@ -84,6 +94,19 @@ mod tests {
             ..Config::default()
         };
         assert_eq!(format("a\nb\n", &crlf, &Nasm).text, "a\r\nb\r\n");
+    }
+
+    #[test]
+    fn disabled_regions_are_byte_for_byte() {
+        let src = "a  \n; reasm: off\nb  \n; reasm: on\nc  \n";
+        assert_eq!(fmt(src), "a\n; reasm: off\nb  \n; reasm: on\nc\n");
+    }
+
+    #[test]
+    fn reports_parse_diagnostics() {
+        let out = format("db 'oops\n", &Config::default(), &Nasm);
+        assert_eq!(out.diagnostics.len(), 1);
+        assert_eq!(out.diagnostics[0].code, "W002");
     }
 
     #[test]

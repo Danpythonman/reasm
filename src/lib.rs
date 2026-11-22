@@ -9,6 +9,7 @@ pub mod diag;
 pub mod dialect;
 pub mod driver;
 pub mod format;
+pub mod ir;
 pub mod source;
 
 pub use config::Config;

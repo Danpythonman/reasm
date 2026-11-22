@@ -249,9 +249,6 @@ mod tests {
         c.extensions = vec![".asm".into()];
         assert!(c.validate().unwrap_err().contains("without the dot"));
         c = Config::default();
-        c.case.preprocessor = CaseStyle::Lower;
-        assert!(c.validate().unwrap_err().contains("case.preprocessor"));
-        c = Config::default();
         c.comments.min_gap = 0;
         assert!(c.validate().unwrap_err().contains("comments.min_gap"));
     }

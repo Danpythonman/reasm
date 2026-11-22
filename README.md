@@ -5,10 +5,11 @@ small binary. The first supported dialect is **NASM** (x86 / x86-64). The design
 keeps dialect-specific code separate from the shared formatter so that more
 dialects (GAS/AT&T, MASM, ...) can be added later.
 
-> **Status:** early development (milestone M1 of [the roadmap](docs/ROADMAP.md)).
-> The CLI, configuration system and file handling work. Formatting is limited
-> to trailing whitespace, line endings and the end of the file. NASM parsing
-> and layout come next.
+> **Status:** early development (milestone M2 of [the roadmap](docs/ROADMAP.md)).
+> The CLI, configuration and the NASM parser work, and the parser reports
+> warnings for lines it can't handle. Output is still limited to trailing
+> whitespace, line endings and the end of the file. The layout engine (M3)
+> is next.
 
 ## Usage
 

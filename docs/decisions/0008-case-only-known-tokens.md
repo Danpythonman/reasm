@@ -10,13 +10,14 @@ keywords and directives are case-insensitive.
 ## Decision
 A token is case-transformed only if **both** of these hold:
 1. The lexer/classifier put it in a transformable `TokenKind` (Mnemonic, Prefix,
-   Register, SizeKeyword, OperandKeyword, Data, Directive, and
-   PreprocessorName once that's verified), **and**
+   Register, SizeKeyword, OperandKeyword, Data, Directive,
+   PreprocessorName), **and**
 2. it matches an entry in the matching static table.
 
 Identifiers, `$`-escaped names, macro calls, section names, strings and
-numbers are never transformed. Preprocessor directive case defaults to
-`preserve` until its case-insensitivity is verified (NASM.md §7).
+numbers are never transformed. All of these keyword kinds were verified
+case-insensitive with NASM 2.16.01 (NASM.md). `rip`, `eip` and `r8l` are
+**not** NASM registers and stay symbols.
 
 ## Consequences
 Missing table entries mean a keyword keeps its case, which is cosmetic. A

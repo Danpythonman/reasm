@@ -423,15 +423,6 @@ impl Config {
             }
         }
 
-        // NASM.md §7: until NASM's case-insensitivity for `%` directives is
-        // verified, changing their case could break code.
-        if self.case.preprocessor != CaseStyle::Preserve {
-            return Err(
-                "`case.preprocessor`: only \"preserve\" is supported for now \
-                        (see docs/NASM.md §7)"
-                    .into(),
-            );
-        }
         Ok(())
     }
 }

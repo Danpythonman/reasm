@@ -20,6 +20,17 @@ macro `foo` with argument `bar`.
   **never** split, because `equ` requires its label on the same line.
 - `add_colon` never applies to `equ` lines unless `add_colon_to_equ` is set.
 
+- *Added in M2, from tests against NASM 2.16.01 and its own test suite:*
+  - Standard macros (`section`, `global`, `struc`, `align`, ...) are reserved
+    even before a colon, because NASM expands them first (`section: db 1` is
+    not a label). Plain directives (`list`, `map`) can be labels.
+  - A lone word without a colon is a label only in column 0. When indented,
+    it's treated as a macro call with no arguments. `add_colon` therefore
+    never applies to lone words, because a wrong guess there could turn a
+    macro call into a label.
+  - Macro parameters and pasted names (`%1:`, `start%1:`, `.x_%+1:`) can be
+    labels.
+
 ## Consequences
 Code from projects that use many macros from `%include` files might want
 `known_macros` set to get the best label detection. This is documented in

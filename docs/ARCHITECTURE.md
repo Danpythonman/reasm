@@ -47,10 +47,11 @@ reasm/
 │       ├── mod.rs           # Dialect trait, registry, selection by name/extension
 │       └── nasm/
 │           ├── mod.rs       # impl Dialect for Nasm
-│           ├── lexer.rs
-│           ├── classify.rs  # line → Line IR, label detection, block structure
-│           └── tables/      # mnemonics (generated), registers, keywords, directives
-├── tools/gen-tables/        # generator for the mnemonic table from NASM's insns.dat (ADR-0009)
+│           ├── lexer.rs     # comment splitting, tokens, token pasting
+│           ├── classify.rs  # line → Line IR, label detection, block structure,
+│           │                # %if 0, reasm: off/on/skip (tests in classify_tests.rs)
+│           └── tables/      # generated.rs (from NASM sources) + hand-written groupings
+├── tools/gen-tables/        # gen_tables.py: keyword tables from the NASM sources (ADR-0009)
 └── tests/
     ├── cases/               # golden tests (input.asm, expected.asm, reasm.toml)
     └── ...
@@ -92,13 +93,15 @@ struct Line {
 
 enum LineContent {
     Blank,
-    Verbatim { text: String, reason: VerbatimReason },  // unparsed / reasm:off / %if 0 / continuation
-    Code {
-        label:   Option<Label>,
-        body:    Option<Body>,
-        comment: Option<Comment>,
-        standalone_comment_col: Option<u32>,  // original column of a comment-only line
-    },
+    Verbatim(VerbatimReason),       // Unparsed | Continuation | Disabled (reasm: off) | CommentedOut (%if 0)
+    Code(CodeLine),
+}
+
+struct CodeLine {
+    label:   Option<Label>,
+    body:    Option<Body>,
+    comment: Option<Comment>,
+    original_column: u32,           // visual column where the line's content started
 }
 
 struct Label {
@@ -107,12 +110,13 @@ struct Label {
     colon: bool,
 }
 
-enum Body {
-    Instruction { prefixes: Vec<Token>, mnemonic: Token, operands: Operands },
-    DataOrEqu   { keyword: Token, operands: Operands },        // db/dw/resb/equ/times/incbin
-    Directive   { name: Token, args: Operands, bracketed: bool }, // section/global/bits/[bits 64]
-    Preprocessor{ name: Token, rest: RawText, block: BlockRole }, // %define, %macro (Open), %endif (Close), %else (Middle)
-    MacroCall   { name: Token, args: RawText },                 // user macro invocation
+struct Body {
+    kind: BodyKind,       // Instruction | Data | Equ | Section | Directive | Struc | Preprocessor | MacroCall
+    prefixes: Vec<Token>, // lock, rep, es, {vex}, `times <expr>`
+    keyword: Token,       // mnemonic, data keyword, directive, %name or macro name
+    operands: Operands,
+    role: BlockRole,      // None | Open(kind) | Middle(kind) | Close(kind)
+    bracketed: bool,      // [bits 64] form
 }
 
 enum Operands {
@@ -150,8 +154,9 @@ Notes:
 pub trait Dialect {
     fn name(&self) -> &'static str;                  // "nasm"
     fn extensions(&self) -> &'static [&'static str]; // ["asm", "nasm", "inc"]
-    fn parse(&self, src: &Source, opts: &DialectOptions, diags: &mut Diagnostics) -> Document;
-    fn lex_check(&self, text: &str) -> Vec<CheckToken>; // used by the safety check, ADR-0011
+    fn trailing_whitespace_significant(&self, line: &str) -> bool;
+    fn parse(&self, src: &Source, config: &Config, diags: &mut Vec<Diagnostic>) -> Document;
+    // M3: fn lex_check(&self, text: &str) -> Vec<CheckToken>; for the safety check, ADR-0011
 }
 ```
 
@@ -240,8 +245,15 @@ reasm reports the first differing token, then exits 3.
 ## 7. Errors and diagnostics
 
 - `Diagnostic { severity: Error | Warning | Note, file, line, col, message, code }`
-- Codes are stable strings (`W001 unparsed-line`, `E101 config-unknown-key`),
-  so they can be silenced: `--allow W001`, or `[diagnostics] allow = ["W001"]`.
+- Codes are stable strings, so they can be silenced: `--allow W001`, or
+  `[diagnostics] allow = ["W001"]`. Current codes:
+  | Code | Severity | Meaning |
+  |---|---|---|
+  | W001 | warning | line couldn't be parsed; left as is |
+  | W002 | warning | unterminated string; line left as is |
+  | W003 | warning | unbalanced block (`%endif` without `%if`, unclosed `%macro`, ...) |
+  | N001 | note | unknown word at statement start, treated as a macro call |
+  | N002 | note | `reasm: off` without `reasm: on` |
 - Rendered as `path:line:col: warning[W001]: message` on stderr (NFR-6).
 - Error types are hand-written enums, with no `anyhow`/`thiserror` (ADR-0012).
 
