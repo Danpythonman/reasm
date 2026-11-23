@@ -1,0 +1,3 @@
+[blank_lines]
+max_consecutive = 2
+strip_leading = true

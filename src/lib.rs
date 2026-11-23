@@ -16,8 +16,13 @@ pub use config::Config;
 pub use format::Formatted;
 
 /// Formats `src` with `config`, choosing the dialect from `config.dialect`
-/// (or the default dialect when it is "auto").
+/// (or the default dialect when it is "auto"). Fails on an unknown
+/// dialect, or when the safety check finds a reasm bug (ADR-0011).
 pub fn format_str(src: &str, config: &Config) -> Result<Formatted, String> {
     let dialect = dialect::select(Some(&config.dialect), None)?;
-    Ok(format::format(src, config, dialect))
+    let formatted = format::format(src, config, dialect);
+    match &formatted.check_failure {
+        Some(e) => Err(format!("internal error: {e}")),
+        None => Ok(formatted),
+    }
 }

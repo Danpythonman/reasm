@@ -3,18 +3,18 @@
 
 /// A parsed file.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct Document {
-    pub lines: Vec<Line>,
+pub struct Document<'a> {
+    pub lines: Vec<Line<'a>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Line {
+pub struct Line<'a> {
     /// 1-based source line number.
     pub number: u32,
     /// Block nesting *at* this line. Openers, closers and middles (`%else`)
     /// carry the depth outside their block; body lines are one deeper.
     pub depth: BlockDepth,
-    pub content: LineContent,
+    pub content: LineContent<'a>,
 }
 
 /// Nesting depth per block kind, so each kind gets its own indent (FMT-11).
@@ -65,11 +65,11 @@ pub enum BlockRole {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum LineContent {
+pub enum LineContent<'a> {
     Blank,
     /// Output as written (ADR-0006, ADR-0017).
     Verbatim(VerbatimReason),
-    Code(CodeLine),
+    Code(CodeLine<'a>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,18 +88,18 @@ pub enum VerbatimReason {
 /// A line with code and/or a comment. A comment-only line has neither
 /// `label` nor `body`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CodeLine {
-    pub label: Option<Label>,
-    pub body: Option<Body>,
-    pub comment: Option<Comment>,
+pub struct CodeLine<'a> {
+    pub label: Option<Label<'a>>,
+    pub body: Option<Body<'a>>,
+    pub comment: Option<Comment<'a>>,
     /// Visual column (tabs expanded) where the line's content started.
     pub original_column: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Label {
+pub struct Label<'a> {
     /// Exactly as written, without the colon.
-    pub name: String,
+    pub name: &'a str,
     pub kind: LabelKind,
     pub colon: bool,
 }
@@ -125,14 +125,14 @@ impl LabelKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Body {
+pub struct Body<'a> {
     pub kind: BodyKind,
     /// `lock`, `rep`, segment prefixes, `{vex}`, and `times <expr>`, in order.
-    pub prefixes: Vec<Token>,
+    pub prefixes: Vec<Token<'a>>,
     /// The mnemonic, data keyword, directive, preprocessor directive or
     /// macro name.
-    pub keyword: Token,
-    pub operands: Operands,
+    pub keyword: Token<'a>,
+    pub operands: Operands<'a>,
     pub role: BlockRole,
     /// Written in primitive `[...]` form (`[bits 64]`, `[section .text]`);
     /// the brackets are implied around `keyword` and `operands`.
@@ -158,15 +158,15 @@ pub enum BodyKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Operands {
+pub enum Operands<'a> {
     /// Fully lexed: spacing may be normalized.
-    Tokens(Vec<Token>),
+    Tokens(Vec<Token<'a>>),
     /// Not lexed (macro arguments, preprocessor bodies) or not lexable:
     /// laid out as one unit, text untouched (ADR-0006 level 2).
-    Raw(String),
+    Raw(&'a str),
 }
 
-impl Operands {
+impl Operands<'_> {
     pub fn is_empty(&self) -> bool {
         match self {
             Self::Tokens(t) => t.is_empty(),
@@ -176,10 +176,10 @@ impl Operands {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Token {
+pub struct Token<'a> {
     pub kind: TokenKind,
     /// Exactly as written.
-    pub text: String,
+    pub text: &'a str,
     /// Whether whitespace preceded the token in the source.
     pub space_before: bool,
 }
@@ -237,9 +237,56 @@ impl TokenKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Comment {
+pub struct Comment<'a> {
     /// The comment marker: `;` for NASM (EXT-2).
-    pub marker: String,
+    pub marker: &'a str,
     /// Everything after the marker, as written (trailing whitespace trimmed).
-    pub text: String,
+    pub text: &'a str,
+}
+
+/// A token as seen by the safety check (ADR-0011). Dialects produce these
+/// with [`crate::dialect::Dialect::check_lines`]; whitespace between
+/// tokens is not represented, so it may change freely.
+/// The safety-check tokens of a whole text: line `i` has
+/// `tokens[starts[i]..starts[i + 1]]` (the last line runs to the end).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CheckLines<'a> {
+    pub tokens: Vec<CheckToken<'a>>,
+    pub starts: Vec<usize>,
+}
+
+impl<'a> CheckLines<'a> {
+    pub fn len(&self) -> usize {
+        self.starts.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.starts.is_empty()
+    }
+
+    pub fn line(&self, i: usize) -> &[CheckToken<'a>] {
+        let end = self.starts.get(i + 1).copied().unwrap_or(self.tokens.len());
+        &self.tokens[self.starts[i]..end]
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CheckToken<'a> {
+    pub kind: CheckKind,
+    /// A slice of the checked text.
+    pub text: &'a str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CheckKind {
+    /// A name or keyword. It may change case only if
+    /// [`crate::dialect::Dialect::case_insensitive`] says so.
+    Word,
+    /// `:` (may be added after a label, `labels.add_colon`).
+    Colon,
+    /// A comment; `text` is everything after the marker. Only the
+    /// whitespace around the text may change.
+    Comment,
+    /// Anything else, compared exactly.
+    Other,
 }

@@ -1,0 +1,3 @@
+[instructions]
+operand_align = "block"
+min_gap = 2

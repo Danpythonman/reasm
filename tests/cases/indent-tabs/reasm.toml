@@ -1,0 +1,6 @@
+[indent]
+style = "tabs"
+tab_width = 4
+instruction = 6
+[comments]
+column = 20

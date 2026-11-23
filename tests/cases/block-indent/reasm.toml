@@ -1,0 +1,6 @@
+[preprocessor]
+indent = "nested"
+macro_body_indent = 4
+conditional_body_indent = 2
+rep_body_indent = 2
+struc_body_indent = 4

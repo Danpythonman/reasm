@@ -1,0 +1,5 @@
+[comments]
+align = "none"
+min_gap = 2
+space_after_marker = "preserve"
+standalone = "preserve"

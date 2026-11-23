@@ -1,18 +1,25 @@
-//! The formatter core. Until M3 it only normalizes whitespace at line ends,
-//! line endings and the end of the file, using the parse to keep
-//! `reasm: off` regions byte for byte and to report diagnostics. The
-//! normalizer, layout engine and safety check arrive in M3 (ROADMAP).
+//! The formatter core (ARCHITECTURE §5): parse → normalize → layout →
+//! emit → safety check.
+
+pub mod emit;
+pub mod layout;
+pub mod normalize;
+pub mod verify;
 
 use crate::config::{Config, LineEndingStyle};
 use crate::diag::Diagnostic;
 use crate::dialect::Dialect;
-use crate::ir::{LineContent, VerbatimReason};
 use crate::source::{LineEnding, Source};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Formatted {
+    /// The formatted text, or the input unchanged when `check_failure`
+    /// is set.
     pub text: String,
     pub diagnostics: Vec<Diagnostic>,
+    /// Set when the safety check (ADR-0011) found a difference. This is
+    /// a reasm bug: the caller must not write the file (exit 3).
+    pub check_failure: Option<String>,
 }
 
 pub fn format(src: &str, config: &Config, dialect: &dyn Dialect) -> Formatted {
@@ -28,35 +35,24 @@ pub fn format(src: &str, config: &Config, dialect: &dyn Dialect) -> Formatted {
     let doc = dialect.parse(&source, config, &mut diagnostics);
     debug_assert_eq!(doc.lines.len(), source.lines.len());
 
-    // (text, may be dropped if blank at the end of the file)
-    let mut lines: Vec<(&str, bool)> = source
-        .lines
-        .iter()
-        .zip(&doc.lines)
-        .map(|(&line, ir)| {
-            if ir.content == LineContent::Verbatim(VerbatimReason::Disabled) {
-                (line, false)
-            } else if dialect.trailing_whitespace_significant(line) {
-                (line, true)
-            } else {
-                (line.trim_end(), true)
-            }
-        })
-        .collect();
-    while lines
-        .last()
-        .is_some_and(|(l, droppable)| *droppable && l.is_empty())
-    {
-        lines.pop();
-    }
-
-    let mut text = String::with_capacity(src.len() + 1);
+    let rows = normalize::rows(&doc, &source.lines, config, dialect);
+    let cols = layout::layout(&rows, config);
+    let mut text = String::with_capacity(src.len() + src.len() / 4 + 16);
     text.push_str(source.bom_str());
-    for (line, _) in &lines {
-        text.push_str(line);
-        text.push_str(newline);
+    emit::emit(&rows, &cols, config, newline, &mut text);
+
+    match verify::verify(dialect, src, &text) {
+        Ok(()) => Formatted {
+            text,
+            diagnostics,
+            check_failure: None,
+        },
+        Err(e) => Formatted {
+            text: src.to_string(),
+            diagnostics,
+            check_failure: Some(e),
+        },
     }
-    Formatted { text, diagnostics }
 }
 
 #[cfg(test)]
@@ -70,7 +66,7 @@ mod tests {
 
     #[test]
     fn trims_trailing_whitespace_and_final_blank_lines() {
-        assert_eq!(fmt("mov eax, 1   \n\n\n"), "mov eax, 1\n");
+        assert_eq!(fmt("mov eax, 1   \n\n\n"), "        mov eax, 1\n");
         assert_eq!(fmt("a\t\nb"), "a\nb\n");
         assert_eq!(fmt(""), "");
         assert_eq!(fmt("   \n\n"), "");

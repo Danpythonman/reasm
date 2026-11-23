@@ -1,0 +1,3 @@
+[instructions]
+operand_align = "fixed"
+operand_offset = 8

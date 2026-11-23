@@ -1,0 +1,6 @@
+[operands]
+bracket_padding = "none"
+memory_plus_minus = "compact"
+memory_scale = "compact"
+segment_colon = "compact"
+space_after_comma = false

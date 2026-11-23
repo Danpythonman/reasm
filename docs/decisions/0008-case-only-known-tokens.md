@@ -19,6 +19,12 @@ numbers are never transformed. All of these keyword kinds were verified
 case-insensitive with NASM 2.16.01 (NASM.md). `rip`, `eip` and `r8l` are
 **not** NASM registers and stay symbols.
 
+**Amended in M3:** a keyword is also left alone when some case variant of it
+is a macro defined in the file or in `nasm.known_macros`/`known_imacros`
+(`%define RAX rbx` makes `rax` → `RAX` unsafe, `%macro PUSH 1` makes
+`push` → `PUSH` unsafe). The classifier demotes such tokens to identifiers
+after its pre-pass.
+
 ## Consequences
 Missing table entries mean a keyword keeps its case, which is cosmetic. A
 wrong extra entry could change the case of a symbol, so table additions need a

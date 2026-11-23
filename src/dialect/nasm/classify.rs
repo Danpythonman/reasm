@@ -5,7 +5,7 @@
 use std::collections::HashSet;
 
 use super::lexer::{self, LexError, Tok};
-use super::tables::{self, contains};
+use super::tables;
 use crate::config::{Config, NasmOptions};
 use crate::diag::{Diagnostic, Severity};
 use crate::ir::*;
@@ -20,7 +20,11 @@ pub mod codes {
     pub const UNCLOSED_OFF: &str = "N002";
 }
 
-pub fn parse(source: &Source, config: &Config, diags: &mut Vec<Diagnostic>) -> Document {
+pub fn parse<'a>(
+    source: &Source<'a>,
+    config: &Config,
+    diags: &mut Vec<Diagnostic>,
+) -> Document<'a> {
     let macros = Macros::collect(&source.lines, &config.nasm);
     let classifier = Classifier {
         macros,
@@ -81,7 +85,9 @@ pub fn parse(source: &Source, config: &Config, diags: &mut Vec<Diagnostic>) -> D
         }
         b.push_with_role(number, content, role, diags);
     }
-    b.finish(diags)
+    let mut doc = b.finish(diags);
+    classifier.macros.protect(&mut doc);
+    doc
 }
 
 fn diag(
@@ -110,6 +116,8 @@ fn column(text: &str, offset: usize) -> u32 {
 
 struct Macros {
     exact: HashSet<String>,
+    /// `exact`, lowercased (for [`Macros::shadows`]).
+    exact_lower: HashSet<String>,
     /// Lowercased names of case-insensitive macros.
     folded: HashSet<String>,
 }
@@ -118,6 +126,7 @@ impl Macros {
     fn collect(lines: &[&str], opts: &NasmOptions) -> Self {
         let mut m = Self {
             exact: opts.known_macros.iter().cloned().collect(),
+            exact_lower: HashSet::new(),
             folded: opts
                 .known_imacros
                 .iter()
@@ -132,20 +141,63 @@ impl Macros {
             if !directive.starts_with('%') {
                 continue;
             }
+            if directive.eq_ignore_ascii_case("%use") {
+                // Statement-level macros of the standard packages.
+                let package = name.trim_matches(['"', '\'', '<', '>']);
+                if package.eq_ignore_ascii_case("smartalign") {
+                    m.folded.insert("alignmode".into());
+                }
+                continue;
+            }
             let name = name.split('(').next().unwrap_or(name).to_string();
             match directive.to_ascii_lowercase().as_str() {
-                "%macro" | "%rmacro" | "%define" | "%xdefine" => m.exact.insert(name),
-                "%imacro" | "%irmacro" | "%idefine" | "%ixdefine" => {
-                    m.folded.insert(name.to_ascii_lowercase())
-                }
+                "%macro" | "%rmacro" | "%define" | "%xdefine" | "%assign" | "%defstr"
+                | "%deftok" => m.exact.insert(name),
+                "%imacro" | "%irmacro" | "%idefine" | "%ixdefine" | "%iassign" | "%idefstr"
+                | "%ideftok" => m.folded.insert(name.to_ascii_lowercase()),
                 _ => false,
             };
         }
+        m.exact_lower = m.exact.iter().map(|s| s.to_ascii_lowercase()).collect();
         m
     }
 
     fn contains(&self, word: &str) -> bool {
         self.exact.contains(word) || self.folded.contains(&word.to_ascii_lowercase())
+    }
+
+    /// Whether some case variant of `word` is a macro name, so changing
+    /// the word's case could turn it into (or out of) a macro call
+    /// (ADR-0008): `%define RAX 1` makes `rax` → `RAX` unsafe.
+    fn shadows(&self, word: &str) -> bool {
+        let lower = word.to_ascii_lowercase();
+        self.folded.contains(&lower) || self.exact_lower.contains(&lower)
+    }
+
+    /// Demotes keyword tokens that a macro shadows to identifiers, so the
+    /// formatter never changes their case.
+    fn protect(&self, doc: &mut Document<'_>) {
+        if self.exact.is_empty() && self.folded.is_empty() {
+            return;
+        }
+        let fix = |t: &mut Token| {
+            if t.kind.is_case_transformable() && self.shadows(t.text) {
+                t.kind = TokenKind::Identifier;
+            }
+        };
+        for line in &mut doc.lines {
+            let LineContent::Code(CodeLine {
+                body: Some(body), ..
+            }) = &mut line.content
+            else {
+                continue;
+            };
+            body.prefixes.iter_mut().for_each(fix);
+            fix(&mut body.keyword);
+            if let Operands::Tokens(tokens) = &mut body.operands {
+                tokens.iter_mut().for_each(fix);
+            }
+        }
     }
 }
 
@@ -175,7 +227,7 @@ impl Marker {
 fn is_if_zero(body: &Body) -> bool {
     body.kind == BodyKind::Preprocessor
         && body.keyword.text.eq_ignore_ascii_case("%if")
-        && matches!(&body.operands, Operands::Raw(r) if r == "0")
+        && matches!(&body.operands, Operands::Raw(r) if *r == "0")
 }
 
 enum CommentedStep {
@@ -193,7 +245,7 @@ fn commented_out_step(raw: &str, nest: u32) -> CommentedStep {
         .next()
         .unwrap_or("");
     let lower = word.to_ascii_lowercase();
-    let is_pp = lower.starts_with('%') && contains(tables::PREPROCESSOR_DIRECTIVES, &lower);
+    let is_pp = lower.starts_with('%') && tables::is(&lower, tables::flag::PREPROCESSOR_DIRECTIVES);
     if is_pp && lower.starts_with("%if") {
         CommentedStep::Inside(nest + 1)
     } else if is_pp && lower == "%endif" {
@@ -213,8 +265,8 @@ fn commented_out_step(raw: &str, nest: u32) -> CommentedStep {
 // Block structure
 
 #[derive(Default)]
-struct Builder {
-    lines: Vec<Line>,
+struct Builder<'a> {
+    lines: Vec<Line<'a>>,
     depth: BlockDepth,
     /// Open blocks with the line that opened them.
     stack: Vec<(BlockKind, u32)>,
@@ -233,8 +285,8 @@ fn block_name(kind: BlockKind) -> &'static str {
     }
 }
 
-impl Builder {
-    fn push(&mut self, number: u32, content: LineContent) {
+impl<'a> Builder<'a> {
+    fn push(&mut self, number: u32, content: LineContent<'a>) {
         self.lines.push(Line {
             number,
             depth: self.depth,
@@ -250,7 +302,7 @@ impl Builder {
     fn push_with_role(
         &mut self,
         number: u32,
-        content: LineContent,
+        content: LineContent<'a>,
         role: BlockRole,
         diags: &mut Vec<Diagnostic>,
     ) {
@@ -308,7 +360,7 @@ impl Builder {
         });
     }
 
-    fn finish(self, diags: &mut Vec<Diagnostic>) -> Document {
+    fn finish(self, diags: &mut Vec<Diagnostic>) -> Document<'a> {
         for (kind, line) in &self.stack {
             diags.push(diag(
                 Severity::Warning,
@@ -354,30 +406,31 @@ enum Kw {
 }
 
 fn keyword(word: &str) -> Option<Kw> {
-    use tables::*;
+    use tables::flag::*;
+    let f = tables::flags(word);
     let kw = if word.eq_ignore_ascii_case("times") {
         Kw::Times
     } else if word.eq_ignore_ascii_case("equ") {
         Kw::Equ
-    } else if contains(DATA_PSEUDO_OPS, word) || contains(ALIGN_MACROS, word) {
+    } else if f & (DATA_PSEUDO_OPS | ALIGN_MACROS) != 0 {
         Kw::Data
-    } else if contains(STRUC_OPENERS, word) {
+    } else if f & STRUC_OPENERS != 0 {
         Kw::Struc(BlockRole::Open(BlockKind::Struc))
-    } else if contains(STRUC_CLOSERS, word) {
+    } else if f & STRUC_CLOSERS != 0 {
         Kw::Struc(BlockRole::Close(BlockKind::Struc))
-    } else if contains(STRUC_OTHER, word) {
+    } else if f & STRUC_OTHER != 0 {
         Kw::Struc(BlockRole::None)
-    } else if contains(SECTION_DIRECTIVES, word) {
+    } else if f & SECTION_DIRECTIVES != 0 {
         Kw::Section
-    } else if contains(STANDARD_MACROS, word) {
+    } else if f & STANDARD_MACROS != 0 {
         Kw::Directive { macro_based: true }
-    } else if contains(DIRECTIVES, word) {
+    } else if f & DIRECTIVES != 0 {
         Kw::Directive { macro_based: false }
-    } else if contains(MNEMONICS, word) {
+    } else if f & MNEMONICS != 0 {
         Kw::Mnemonic
-    } else if contains(PREFIXES, word) {
+    } else if f & PREFIXES != 0 {
         Kw::Prefix
-    } else if contains(SEGMENT_REGISTERS, word) {
+    } else if f & SEGMENT_REGISTERS != 0 {
         Kw::SegmentRegister
     } else {
         return None;
@@ -391,9 +444,27 @@ fn reserved(word: &str) -> bool {
         Some(Kw::Directive { macro_based: false }) => false,
         Some(_) => true,
         None => {
-            contains(tables::REGISTERS, word)
-                || contains(tables::SIZE_KEYWORDS, word)
-                || contains(tables::SPECIAL_KEYWORDS, word)
+            tables::is(word, tables::flag::REGISTERS)
+                || tables::is(word, tables::flag::SIZE_KEYWORDS)
+                || tables::is(word, tables::flag::SPECIAL_KEYWORDS)
+        }
+    }
+}
+
+/// Words that can't be a label even with a colon: registers, size and
+/// special keywords, prefixes, `times`, and standard macros (which expand
+/// before NASM sees the colon). Verified with NASM 2.16.01 (NASM.md §3).
+fn reserved_before_colon(word: &str) -> bool {
+    match keyword(word) {
+        Some(Kw::Mnemonic | Kw::Data | Kw::Equ | Kw::Directive { macro_based: false }) => {
+            tables::is(word, tables::flag::PREFIXES)
+                || tables::is(word, tables::flag::STANDARD_MACROS)
+        }
+        Some(_) => true,
+        None => {
+            tables::is(word, tables::flag::REGISTERS)
+                || tables::is(word, tables::flag::SIZE_KEYWORDS)
+                || tables::is(word, tables::flag::SPECIAL_KEYWORDS)
         }
     }
 }
@@ -434,26 +505,26 @@ fn operand_kind(tok: &Tok, text: &str) -> TokenKind {
     if tok.kind != TokenKind::Identifier || text.starts_with('$') {
         return tok.kind;
     }
-    if contains(tables::REGISTERS, text) {
+    if tables::is(text, tables::flag::REGISTERS) {
         TokenKind::Register
-    } else if contains(tables::SIZE_KEYWORDS, text) {
+    } else if tables::is(text, tables::flag::SIZE_KEYWORDS) {
         TokenKind::SizeKeyword
-    } else if contains(tables::SPECIAL_KEYWORDS, text) {
+    } else if tables::is(text, tables::flag::SPECIAL_KEYWORDS) {
         TokenKind::OperandKeyword
     } else {
         TokenKind::Identifier
     }
 }
 
-fn token(code: &str, tok: &Tok, kind: TokenKind) -> Token {
+fn token<'a>(code: &'a str, tok: &Tok, kind: TokenKind) -> Token<'a> {
     Token {
         kind,
-        text: code[tok.start..tok.end].to_string(),
+        text: &code[tok.start..tok.end],
         space_before: tok.space_before,
     }
 }
 
-fn operand_tokens(code: &str, toks: &[Tok]) -> Operands {
+fn operand_tokens<'a>(code: &'a str, toks: &[Tok]) -> Operands<'a> {
     Operands::Tokens(
         toks.iter()
             .map(|t| token(code, t, operand_kind(t, &code[t.start..t.end])))
@@ -467,15 +538,15 @@ struct Classifier {
 }
 
 /// Result of classifying the code part of a line.
-type Classified = (Option<Label>, Option<Body>);
+type Classified<'a> = (Option<Label<'a>>, Option<Body<'a>>);
 
 impl Classifier {
-    fn classify(
+    fn classify<'a>(
         &self,
-        raw: &str,
+        raw: &'a str,
         number: u32,
         diags: &mut Vec<Diagnostic>,
-    ) -> (LineContent, BlockRole) {
+    ) -> (LineContent<'a>, BlockRole) {
         if raw.trim().is_empty() {
             return (LineContent::Blank, BlockRole::None);
         }
@@ -497,8 +568,8 @@ impl Classifier {
             }
         };
         let comment = comment.map(|c| Comment {
-            marker: ";".into(),
-            text: c.trim_end().to_string(),
+            marker: ";",
+            text: c.trim_end(),
         });
         let lead = code.len() - code.trim_start().len();
         let code = code.trim();
@@ -548,15 +619,15 @@ impl Classifier {
         col
     }
 
-    fn classify_code(
+    fn classify_code<'a>(
         &self,
-        code: &str,
+        code: &'a str,
         original_column: u32,
         number: u32,
         lead: usize,
         raw: &str,
         diags: &mut Vec<Diagnostic>,
-    ) -> Result<Classified, LexError> {
+    ) -> Result<Classified<'a>, LexError> {
         let bytes = code.as_bytes();
         if bytes[0] == b'%' && bytes.get(1).is_some_and(u8::is_ascii_alphabetic) {
             return Ok((None, Some(preprocessor(code))));
@@ -579,15 +650,15 @@ impl Classifier {
         ) || self.macros.contains(word)
     }
 
-    fn statement(
+    fn statement<'a>(
         &self,
-        code: &str,
+        code: &'a str,
         original_column: u32,
         number: u32,
         lead: usize,
         raw: &str,
         diags: &mut Vec<Diagnostic>,
-    ) -> Result<Classified, LexError> {
+    ) -> Result<Classified<'a>, LexError> {
         let (toks, err) = lexer::lex(code);
         let text = |t: &Tok| &code[t.start..t.end];
         let fail = |offset: usize, message: &str| LexError {
@@ -608,11 +679,18 @@ impl Classifier {
         let mut i = 0;
         let mut label = None;
         let make_label = |t: &Tok, colon| Label {
-            name: text(t).to_string(),
+            name: text(t),
             kind: label_kind(text(t)),
             colon,
         };
-        if labelable(&toks[0]) && toks.get(1).is_some_and(|t| t.kind == TokenKind::Colon) {
+        // With a colon, instruction and data keywords are labels too
+        // (`add: jmp add-2`, verified with NASM 2.16.01).
+        let colon_labelable = |t: &Tok| match t.kind {
+            TokenKind::Identifier => !reserved_before_colon(text(t)),
+            TokenKind::MacroParam => true,
+            _ => false,
+        };
+        if colon_labelable(&toks[0]) && toks.get(1).is_some_and(|t| t.kind == TokenKind::Colon) {
             label = Some(make_label(&toks[0], true));
             i = 2;
         } else if labelable(&toks[0]) && !self.macros.contains(text(&toks[0])) {
@@ -675,12 +753,14 @@ impl Classifier {
                     );
                     j = stop;
                 }
-                TokenKind::Identifier if contains(tables::PREFIXES, text(tok)) && next_is_insn => {
+                TokenKind::Identifier
+                    if tables::is(text(tok), tables::flag::PREFIXES) && next_is_insn =>
+                {
                     prefixes.push(token(code, tok, TokenKind::Prefix));
                     j += 1;
                 }
                 TokenKind::Identifier
-                    if contains(tables::SEGMENT_REGISTERS, text(tok)) && next_is_insn =>
+                    if tables::is(text(tok), tables::flag::SEGMENT_REGISTERS) && next_is_insn =>
                 {
                     prefixes.push(token(code, tok, TokenKind::Register));
                     j += 1;
@@ -743,17 +823,17 @@ impl Classifier {
 
     /// Builds a body whose keyword is `toks[j]`; the rest become operands.
     #[allow(clippy::too_many_arguments)]
-    fn body(
+    fn body<'a>(
         &self,
-        code: &str,
+        code: &'a str,
         toks: &[Tok],
         j: usize,
         err: &Option<LexError>,
         kind: BodyKind,
         kw_kind: TokenKind,
         role: BlockRole,
-        prefixes: Vec<Token>,
-    ) -> Result<Body, LexError> {
+        prefixes: Vec<Token<'a>>,
+    ) -> Result<Body<'a>, LexError> {
         let kw = &toks[j];
         if let Some(e) = err
             && e.offset < kw.end
@@ -762,7 +842,7 @@ impl Classifier {
         }
         let rest = code[kw.end..].trim();
         let operands = if kind == BodyKind::MacroCall || err.is_some() {
-            Operands::Raw(rest.to_string())
+            Operands::Raw(rest)
         } else {
             operand_tokens(code, &toks[j + 1..])
         };
@@ -777,13 +857,13 @@ impl Classifier {
     }
 }
 
-fn preprocessor(code: &str) -> Body {
+fn preprocessor(code: &str) -> Body<'_> {
     let end = code[1..]
         .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
         .map_or(code.len(), |p| p + 1);
     let name = &code[..end];
     let lower = name.to_ascii_lowercase();
-    let known = contains(tables::PREPROCESSOR_DIRECTIVES, &lower);
+    let known = tables::is(&lower, tables::flag::PREPROCESSOR_DIRECTIVES);
     Body {
         kind: BodyKind::Preprocessor,
         prefixes: Vec::new(),
@@ -793,10 +873,10 @@ fn preprocessor(code: &str) -> Body {
             } else {
                 TokenKind::MacroParam
             },
-            text: name.to_string(),
+            text: name,
             space_before: false,
         },
-        operands: Operands::Raw(code[end..].trim().to_string()),
+        operands: Operands::Raw(code[end..].trim()),
         role: if known {
             pp_role(&lower)
         } else {
@@ -806,7 +886,7 @@ fn preprocessor(code: &str) -> Body {
     }
 }
 
-fn bracketed(code: &str) -> Result<Body, LexError> {
+fn bracketed(code: &str) -> Result<Body<'_>, LexError> {
     let inner = code
         .strip_prefix('[')
         .and_then(|c| c.strip_suffix(']'))
@@ -829,7 +909,7 @@ fn bracketed(code: &str) -> Result<Body, LexError> {
         });
     };
     let name = &inner[first.start..first.end];
-    let kind = if contains(tables::SECTION_DIRECTIVES, name) {
+    let kind = if tables::is(name, tables::flag::SECTION_DIRECTIVES) {
         BodyKind::Section
     } else {
         BodyKind::Directive

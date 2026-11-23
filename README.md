@@ -5,11 +5,12 @@ small binary. The first supported dialect is **NASM** (x86 / x86-64). The design
 keeps dialect-specific code separate from the shared formatter so that more
 dialects (GAS/AT&T, MASM, ...) can be added later.
 
-> **Status:** early development (milestone M2 of [the roadmap](docs/ROADMAP.md)).
-> The CLI, configuration and the NASM parser work, and the parser reports
-> warnings for lines it can't handle. Output is still limited to trailing
-> whitespace, line endings and the end of the file. The layout engine (M3)
-> is next.
+> **Status:** early development (milestone M3 of [the roadmap](docs/ROADMAP.md)).
+> Formatting works with every option in CONFIGURATION.md except
+> `format_macro_args`. A safety check refuses to write a file if anything
+> other than whitespace, keyword case or a label colon would change. On
+> NASM's own test suite, every file that assembles still assembles to the
+> same bytes after formatting.
 
 ## Usage
 

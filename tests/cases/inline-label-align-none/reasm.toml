@@ -1,0 +1,4 @@
+[labels]
+split_inline = "preserve"
+[instructions]
+inline_label_align = "none"

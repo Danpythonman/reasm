@@ -66,10 +66,13 @@ msglen  equ $-msg
 |---|---|---|---|
 | `indent` | integer | `0` | Column of non-local labels (`foo:`). |
 | `local_indent` | integer | `0` | Column of local labels (`.foo:`), plus special (`..@foo:`), macro-local (`%%foo:`) and context-local (`%$foo:`) labels. **This is the main change from nasmfmt.** |
-| `split_inline` | `"preserve"` \| `"code"` \| `"all"` | `"all"` | `code`: move an instruction that shares a line with a label onto its own line. `all`: also split data lines (`msg db 1` → `msg:` / `db 1`). `equ` lines are **never** split, because `equ` needs its label on the same line (ADR-0019). |
-| `add_colon` | bool | `false` | Add `:` to colonless labels that stay inline (`msg db 1` → `msg: db 1`). Labels moved to their own line by `split_inline` always get a colon. |
+| `split_inline` | `"preserve"` \| `"code"` \| `"all"` | `"all"` | `code`: move an instruction that shares a line with a label onto its own line. `all`: also split data lines (`msg db 1` → `msg:` / `db 1`). `equ` lines are **never** split, because `equ` needs its label on the same line. A word *without* a colon before an instruction (`foo nop`) is never split either: it could be a macro call (ADR-0019). |
+| `add_colon` | bool | `false` | Add `:` to colonless labels that stay inline (`msg db 1` → `msg: db 1`). Labels moved to their own line by `split_inline` always get a colon. Like `split_inline`, it skips a colonless word before an instruction, and a label alone on its line. |
 | `add_colon_to_equ` | bool | `false` | Also add the colon on `equ` lines (`x equ 1` → `x: equ 1`). |
 | `inline_gap` | integer ≥ 1 | `1` | Minimum spaces between an inline label and the keyword after it. |
+
+A label alone on its line *without* a colon (`foo`) always stays in column 0:
+indented, reasm and readers would take it for a macro call.
 
 ```nasm
 ; input                     ; split_inline = "all" (default)   ; "preserve"
@@ -102,9 +105,13 @@ print:                              print:
 
 ## `[operands]`
 
-These rules only apply when the operand list could be fully lexed. Otherwise
-the operand text is kept exactly as written (ARCHITECTURE §3). Strings are
-never touched.
+These rules apply to instructions, data, `equ` and `struc` lines when the
+operand list could be fully lexed. Otherwise the operand text is kept exactly
+as written (ARCHITECTURE §3). Strings are never touched. Directive arguments
+(`section`, `global`, `[bits 64]`, ...) only have runs of spaces shortened,
+because NASM splits them at whitespace (NASM.md §6). Outside `[...]`,
+spacing around `+ - *` is kept as written (`expressions`). A space is never
+removed where the two tokens would read back differently (`start %1`).
 
 | Key | Type | Default | Description |
 |---|---|---|---|
@@ -125,9 +132,9 @@ to their operand.
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `align` | `"none"` \| `"fixed"` \| `"block"` | `"fixed"` | How trailing comments are placed. |
-| `column` | integer | `39` | Column of the `;` for `fixed`, and the lowest column used by `block`. 39 matches nasmfmt's `-ci 40`, which counts from 1. |
+| `column` | integer | `39` | Column of the `;` for `fixed`, and the lowest column used by `block`. 39 matches nasmfmt's `-ci 40`, which counts from 1. Block indent (`[preprocessor] *_body_indent`) is not added to it. |
 | `min_gap` | integer ≥ 1 | `1` | Minimum spaces between code and the comment when code reaches the column. |
-| `standalone` | `"preserve"` \| `"code"` \| `"zero"` \| `"smart"` | `"zero"` | Indentation of comment-only lines. `code` uses the next code line's indent. `smart` keeps column-0 comments in column 0 and indents the rest like `code`. |
+| `standalone` | `"preserve"` \| `"code"` \| `"zero"` \| `"smart"` | `"zero"` | Indentation of comment-only lines. `zero` is column 0. `code` uses the column where the next code line starts (its label, or its keyword), or the previous code line's at the end of the file. `smart` keeps column-0 comments in column 0 and indents the rest like `code`. |
 | `space_after_marker` | `"preserve"` \| `"ensure"` | `"ensure"` | `ensure` turns `;text` into `; text`. Banner lines (`;;`, `;-`, `;=`, `;*`, ...) and a bare `;` are never changed. |
 
 ## `[alignment]`
@@ -136,7 +143,7 @@ These only affect the `block` modes.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `break_on` | array of strings | `["blank", "label", "block"]` | Events that end an alignment group: `"blank"`, `"label"`, `"comment"`, `"block"`, `"directive"`. A verbatim line always ends a group. |
+| `break_on` | array of strings | `["blank", "label", "block"]` | Events that end an alignment group: `"blank"` (blank line), `"label"` (a line that is only a label, including one made by `split_inline`), `"comment"` (comment-only line), `"block"` (`%macro`/`%if`/`%rep`/`struc` openers, closers, `%else`, and depth changes), `"directive"` (section, directive and `%` lines). A verbatim line always ends a group. |
 | `max_column` | integer | `60` | A `block` column never goes past this. Rows that would need more use `min_gap` instead. |
 
 ## `[case]`
@@ -176,15 +183,16 @@ one newline.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `indent` | `"zero"` \| `"instruction"` \| `"nested"` | `"zero"` | Indent of `%` lines. `zero` = column 0 (the third change from nasmfmt, which uses `instruction`). `nested` = column 0 plus the current block indent. |
+| `indent` | `"zero"` \| `"instruction"` \| `"nested"` | `"zero"` | Indent of `%` lines. `zero` = column 0 even inside blocks (the third change from nasmfmt, which uses `instruction`). `nested` = column 0 plus the current block indent. `instruction` = the instruction column plus the block indent. |
 | `arg_gap` | integer ≥ 1 | `1` | Spaces between `%name` and its first argument. The rest of the line is kept as written. |
 | `macro_body_indent` | integer | `0` | Extra indent per nesting level inside `%macro`/`%imacro`. |
 | `conditional_body_indent` | integer | `0` | Extra indent per level inside `%if*` … `%endif`. |
 | `rep_body_indent` | integer | `0` | Extra indent per level inside `%rep` … `%endrep`. |
 | `struc_body_indent` | integer | `0` | Extra indent inside `struc`/`endstruc`, `istruc`/`iend`. |
-| `format_macro_args` | bool | `false` | Apply `[operands]` rules to user macro calls. |
+| `format_macro_args` | bool | `false` | Apply `[operands]` rules to user macro calls. *Not implemented yet (M4); accepted and ignored.* |
 
-Block indent is added to every column on the line, labels included. Lines
+Block indent is added to every column on the line, labels included, except
+the trailing comment column and `%` lines with `indent = "zero"`. Lines
 inside `%if 0` … `%endif` are always kept verbatim (ADR-0007). nasmfmt doesn't
 handle nesting at all, which is why all body indents default to 0.
 

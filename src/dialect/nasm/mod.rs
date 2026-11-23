@@ -3,9 +3,10 @@
 use super::Dialect;
 use crate::config::Config;
 use crate::diag::Diagnostic;
-use crate::ir::Document;
+use crate::ir::{CheckLines, Document};
 use crate::source::Source;
 
+pub mod check;
 pub mod classify;
 pub mod lexer;
 pub mod tables;
@@ -26,8 +27,25 @@ impl Dialect for Nasm {
         trimmed.len() != line.len() && trimmed.ends_with('\\')
     }
 
-    fn parse(&self, source: &Source, config: &Config, diags: &mut Vec<Diagnostic>) -> Document {
+    fn parse<'a>(
+        &self,
+        source: &Source<'a>,
+        config: &Config,
+        diags: &mut Vec<Diagnostic>,
+    ) -> Document<'a> {
         classify::parse(source, config, diags)
+    }
+
+    fn joinable(&self, a: &str, b: &str) -> bool {
+        check::joinable(a, b)
+    }
+
+    fn check_lines<'a>(&self, text: &'a str) -> CheckLines<'a> {
+        check::check_lines(text)
+    }
+
+    fn case_insensitive(&self, word: &str) -> bool {
+        check::case_insensitive(word)
     }
 }
 

@@ -73,7 +73,7 @@ fn stderr(o: &Output) -> String {
 }
 
 const MESSY: &str = "mov eax, 1   \n\n\n";
-const CLEAN: &str = "mov eax, 1\n";
+const CLEAN: &str = "        mov eax, 1\n";
 
 #[test]
 fn formats_file_in_place() {
@@ -158,18 +158,18 @@ fn config_discovery_and_overrides() {
     t.write("reasm.toml", "line_ending = \"crlf\"\n");
     t.write("sub/a.asm", "mov eax, 1\n");
     let o = reasm(&t.0, &["--stdout", "sub/a.asm"], None);
-    assert_eq!(stdout(&o), "mov eax, 1\r\n");
+    assert_eq!(stdout(&o), "        mov eax, 1\r\n");
     let o = reasm(
         &t.0,
         &["--stdout", "--set", "line_ending=lf", "sub/a.asm"],
         None,
     );
-    assert_eq!(stdout(&o), "mov eax, 1\n");
+    assert_eq!(stdout(&o), "        mov eax, 1\n");
     let o = reasm(&t.0, &["--stdout", "--no-config", "sub/a.asm"], None);
-    assert_eq!(stdout(&o), "mov eax, 1\n");
+    assert_eq!(stdout(&o), "        mov eax, 1\n");
     // --stdin-filepath drives discovery for stdin.
     let o = reasm(&t.0, &["--stdin-filepath", "sub/x.asm"], Some("nop\n"));
-    assert_eq!(stdout(&o), "nop\r\n");
+    assert_eq!(stdout(&o), "        nop\r\n");
 }
 
 #[test]

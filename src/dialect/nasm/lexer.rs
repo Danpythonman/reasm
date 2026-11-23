@@ -72,8 +72,15 @@ const OPERATORS: &[&str] = &[
 /// Tokenizes `text`. On error, returns the tokens before the error too,
 /// so the classifier can still use the start of the line (ADR-0006).
 pub fn lex(text: &str) -> (Vec<Tok>, Option<LexError>) {
+    let mut toks = Vec::new();
+    let err = lex_into(text, &mut toks);
+    (toks, err)
+}
+
+/// Like [`lex`], but appends to a reused buffer (cleared first).
+pub fn lex_into(text: &str, toks: &mut Vec<Tok>) -> Option<LexError> {
+    toks.clear();
     let bytes = text.as_bytes();
-    let mut toks: Vec<Tok> = Vec::new();
     let mut i = 0;
     let mut space = false;
     while i < bytes.len() {
@@ -113,10 +120,10 @@ pub fn lex(text: &str) -> (Vec<Tok>, Option<LexError>) {
                 i = end;
                 space = false;
             }
-            Err(e) => return (toks, Some(e)),
+            Err(e) => return Some(e),
         }
     }
-    (toks, None)
+    None
 }
 
 fn take_while(bytes: &[u8], mut i: usize, f: impl Fn(u8) -> bool) -> usize {

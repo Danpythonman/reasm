@@ -1,0 +1,5 @@
+[labels]
+split_inline = "preserve"
+add_colon = true
+add_colon_to_equ = true
+inline_gap = 2

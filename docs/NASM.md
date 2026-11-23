@@ -56,6 +56,11 @@ An unterminated string makes the line verbatim, with warning W002.
   | `%%name` | macro-local |
   | `%$name`, `%$$name` | context-local |
   | `%1`, `start%1`, `.x_%+1` | macro parameters and pasted names (in macro bodies) |
+- **[verified]** With a colon, instruction and data keywords are labels:
+  `add: jmp add-2`, `do:`, `nop:`, `db:`, `resb:`, `equ:` (NASM's
+  `test/insnlbl.asm`). Registers, size keywords, `strict`/`rel`, prefixes
+  (`lock`, `rep`, `wait`, segment registers), `times` and standard macros
+  (`section`, `align`, `global`, `incbin`, ...) are not.
 - A label alone on a line without a colon is legal **[verified]** (NASM warns
   with `orphan-labels`).
 - **[verified]** Symbols and `%macro` names are case-sensitive. Instructions,
@@ -69,9 +74,11 @@ An unterminated string makes the line verbatim, with warning W002.
 ## 4. Classifying a line (ADR-0019)
 
 reasm first makes a pre-pass that collects the names defined by `%macro`,
-`%rmacro`, `%define` and `%xdefine` (case-sensitive), and by `%imacro`,
-`%irmacro`, `%idefine` and `%ixdefine` (case-insensitive). It adds
-`nasm.known_macros` / `known_imacros` from config.
+`%rmacro`, `%define`, `%xdefine`, `%assign`, `%defstr` and `%deftok`
+(case-sensitive), and by their `%i...` forms (case-insensitive). `%use
+smartalign` adds `alignmode`. It adds `nasm.known_macros` / `known_imacros`
+from config. These names are used for label detection, and keywords that a
+macro shadows in any case are never case-changed (ADR-0008).
 
 Then, for each line:
 
@@ -82,11 +89,9 @@ Then, for each line:
 4. Starts with `[` → bracketed `Directive` or `Section`. It must end with `]`.
 5. Otherwise, lex the statement. Then decide whether it starts with a label:
    - `WORD :`, where `WORD` is an identifier or a macro-parameter form and is
-     **not reserved**. Reserved words are instructions, prefixes, registers,
-     size keywords, data keywords and **standard macros** (`section`,
-     `global`, `struc`, `align`, ...). **[verified]** `section: db 1` is the
-     `section` macro, not a label. Plain directives (`list`, `map`, `org`, ...)
-     *can* be labels **[verified]**.
+     not a register, size or special keyword, prefix, `times` or **standard
+     macro** (§3). **[verified]** `section: db 1` is the `section` macro, not
+     a label, while `add:` and `list:` are labels.
    - `WORD` without a colon, followed by an instruction, prefix, data keyword,
      `equ`, `times`, struc keyword or known macro → colonless label
      (`msg db 1`, `list db 1` **[verified]**).
@@ -148,6 +153,11 @@ are subsets of the generated tables.
 - Numbers are one token: digits, letters, `_` and `.`, plus a sign only right
   after an exponent marker (`e` in a decimal float, `p` in a hex float).
   **[verified]** `0x1e+5` is `0x1e` plus 5, and `1.5e+3` is a float.
+
+- **[verified]** Directive arguments are split at whitespace, so spacing
+  inside them is meaningful: `section __LD,__compact_unwind` (Mach-O) differs
+  from `section __LD, __compact_unwind`. reasm only shortens runs of spaces
+  in directive arguments; the `[operands]` rules don't apply to them.
 
 ## 7. Preprocessor
 

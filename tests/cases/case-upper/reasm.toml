@@ -1,0 +1,7 @@
+[case]
+mnemonic = "upper"
+register = "upper"
+size_keyword = "upper"
+data = "upper"
+directive = "upper"
+preprocessor = "upper"

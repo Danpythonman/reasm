@@ -1,0 +1,8 @@
+[comments]
+align = "block"
+column = 0
+[instructions]
+operand_align = "block"
+[alignment]
+break_on = ["blank"]
+max_column = 30

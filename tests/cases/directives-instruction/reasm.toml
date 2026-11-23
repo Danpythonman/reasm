@@ -1,0 +1,7 @@
+[directives]
+section_indent = "instruction"
+indent = "zero"
+arg_gap = 2
+[preprocessor]
+indent = "instruction"
+arg_gap = 3

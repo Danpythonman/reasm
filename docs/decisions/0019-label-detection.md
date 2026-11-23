@@ -31,6 +31,19 @@ macro `foo` with argument `bar`.
   - Macro parameters and pasted names (`%1:`, `start%1:`, `.x_%+1:`) can be
     labels.
 
+- *Added in M3, from running the formatter over NASM's test suite and
+  comparing the assembled output:*
+  - With a colon, instruction and data keywords **are** labels
+    (`add: jmp add-2`, `do:`, `nop:`, `db:`, `equ:`; NASM's
+    `test/insnlbl.asm`). Registers, size and special keywords, prefixes,
+    `times` and standard macros are not. Verified with NASM 2.16.01.
+  - A word without a colon before an **instruction or macro call** is still
+    classified as a label, but it is never split off or given a colon,
+    because it may be a macro from a `%use` package or an include file
+    (`alignmode nop, 32` from `%use smartalign`). Before data keywords
+    (`msg db 1`) it is always a label and may be split.
+  - `%use smartalign` adds `alignmode` to the known macros.
+
 ## Consequences
 Code from projects that use many macros from `%include` files might want
 `known_macros` set to get the best label detection. This is documented in

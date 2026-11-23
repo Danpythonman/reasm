@@ -1,0 +1,6 @@
+[operands]
+bracket_padding = "padded"
+memory_plus_minus = "spaced"
+memory_scale = "spaced"
+space_before_comma = true
+size_keyword_space = false

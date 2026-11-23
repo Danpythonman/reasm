@@ -5,7 +5,7 @@ use std::path::Path;
 
 use crate::config::Config;
 use crate::diag::Diagnostic;
-use crate::ir::Document;
+use crate::ir::{CheckLines, Document};
 use crate::source::Source;
 
 pub mod nasm;
@@ -25,7 +25,27 @@ pub trait Dialect: Sync {
     /// Parses the source into the IR. Must return exactly one IR line per
     /// source line, and never fail: what can't be parsed becomes a
     /// verbatim line plus a warning (ADR-0006).
-    fn parse(&self, source: &Source, config: &Config, diags: &mut Vec<Diagnostic>) -> Document;
+    fn parse<'a>(
+        &self,
+        source: &Source<'a>,
+        config: &Config,
+        diags: &mut Vec<Diagnostic>,
+    ) -> Document<'a>;
+
+    /// Whether the token texts `a` and `b` can be written with no space
+    /// between them and still read back as the same two tokens. The
+    /// formatter only removes a space when this holds (NASM.md §6).
+    fn joinable(&self, a: &str, b: &str) -> bool;
+
+    /// Splits each line into the tokens the safety check compares
+    /// (ADR-0011). Must never fail: text that can't be tokenized becomes
+    /// one opaque [`crate::ir::CheckKind::Other`] token.
+    fn check_lines<'a>(&self, text: &'a str) -> CheckLines<'a>;
+
+    /// Whether the assembler reads `word` (a [`crate::ir::CheckKind::Word`]
+    /// token) without regard to case, so the safety check may allow a case
+    /// change (ADR-0008).
+    fn case_insensitive(&self, word: &str) -> bool;
 }
 
 /// All supported dialects. The first one is the fallback.

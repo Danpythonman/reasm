@@ -156,7 +156,11 @@ pub trait Dialect {
     fn extensions(&self) -> &'static [&'static str]; // ["asm", "nasm", "inc"]
     fn trailing_whitespace_significant(&self, line: &str) -> bool;
     fn parse(&self, src: &Source, config: &Config, diags: &mut Vec<Diagnostic>) -> Document;
-    // M3: fn lex_check(&self, text: &str) -> Vec<CheckToken>; for the safety check, ADR-0011
+    /// Can tokens `a` and `b` be written with no space between them and
+    /// still read back as the same two tokens? (operand spacing)
+    fn joinable(&self, a: &str, b: &str) -> bool;
+    /// Per-line tokens for the safety check (ADR-0011).
+    fn check_lines(&self, text: &str) -> Vec<Vec<CheckToken>>;
 }
 ```
 
@@ -180,15 +184,23 @@ core default < dialect default < file < CLI.
 
 ### 5.1 Normalizer
 
-Applied to each line in the IR:
+`format/normalize.rs` turns each IR line into a `Row`: `Blank`, `Verbatim`
+(text as written), `Comment` (a comment-only line), or `Code` with up to
+four rendered cells and each cell's *base* column (label indent, keyword
+indent by kind, block indent). On the way it applies:
 
 1. Case transforms for transformable token kinds (`[case]`).
-2. Operand spacing for `Operands::Tokens` (`[operands]`). It computes
-   `space_before` for each token. A space between two tokens is only removed
-   when gluing them together can't lex differently. The dialect lexer decides
-   this through `lex_check`, so `%` and `%1`, for example, are never merged.
-3. Label rewrites (`[labels] add_colon`, `split_inline`).
-4. Blank line limiting (`[blank_lines]`).
+2. Operand spacing for `Operands::Tokens` (`[operands]`). A space between two
+   tokens is only removed when `Dialect::joinable` confirms they still read
+   back as the same two tokens, so `start` and `%1` are never glued.
+   Directive and section arguments are rendered as written (runs of spaces
+   shortened), because NASM splits them at whitespace.
+3. Label rewrites (`[labels] add_colon`, `split_inline`). One IR line can
+   become two rows (`foo:` and the instruction).
+4. Comment marker spacing and the placement mode of comment-only lines.
+
+A code line whose trailing whitespace is significant (`\` + spaces) becomes
+a `Verbatim` row, since re-rendering it would trim that whitespace.
 
 ### 5.2 Layout engine
 
@@ -207,9 +219,16 @@ Each column has a **placement policy** taken from config:
 - `Gap(n)`: start `n` spaces after the previous cell.
 
 An **alignment group** is a run of consecutive rows aligned together. Groups
-break on configurable events: blank line, label line, comment-only line,
-change of block depth, or a verbatim line (FMT-15). Every row in a group uses
-the same column positions.
+break on configurable events: blank line, label-only row, comment-only line,
+block opener/closer or change of block depth, directive row, or a verbatim
+line (FMT-15). Every row in a group uses the same column positions.
+
+`layout.rs` places columns in this order: labels; keywords (an inline label
+pushes its keyword right, and `inline_label_align = "block"` aligns those
+across the group); operands (`operand_align`); trailing comments
+(`[comments] align`); and finally comment-only rows that follow the code's
+indent, which take the column of the next code row (or the previous one at
+the end of the file).
 
 The layout engine works on cells and widths and doesn't know anything about
 assembly syntax. That's what lets it work for any dialect.
@@ -220,15 +239,19 @@ spaces (ADR-0015).
 
 ### 5.3 Emitter
 
-The emitter joins cells using the computed columns, trims trailing whitespace,
-applies the line ending, and ensures exactly one final newline.
+`emit.rs` joins cells using the computed columns, applies the blank-line
+limits (`[blank_lines]`) and drops blank lines at the end of the file. The
+caller adds line endings and the BOM. Cells never overlap: if a cell would
+start before the previous one ends, it starts one space after it.
 
 ### 5.4 Safety check (ADR-0011)
 
-Before any write, the driver lexes the original and the formatted text with
-the dialect's `lex_check` and compares the two token sequences, allowing only
-the changes in COR-3. A mismatch is an internal bug. The file is left alone and
-reasm reports the first differing token, then exits 3.
+`format::format` ends by comparing `Dialect::check_lines` of the input and
+the output (`verify.rs`), allowing only the changes in COR-3. Empty lines
+are skipped, and a line that is only `label:` is joined to the next one, so
+label splitting passes. A mismatch is a reasm bug: `Formatted::check_failure`
+is set, the text is returned unchanged, and the driver reports the first
+differing token, leaves the file alone and exits 3.
 
 ## 6. Driver and I/O
 
@@ -261,8 +284,17 @@ reasm reports the first differing token, then exits 3.
 
 - Single pass to read lines. A pre-pass collects `%macro`/`%imacro` names
   defined in the file (ADR-0019).
-- Keyword lookup uses binary search over sorted static `&[&str]` tables with
-  ASCII case-insensitive comparison. No hashing crate and no allocation per
-  lookup.
-- The IR holds `String`s per token for simplicity. If profiling shows
-  allocation cost matters, tokens can switch to `&str`/spans into the source.
+- Keyword lookup: the word is lowercased once into a stack buffer and looked
+  up in one hash map (built on first use from all tables, with a small
+  hand-written FxHash-style hasher) that returns a bit per table. This was
+  about 6× faster than 14 binary searches (M3 measurement). The sorted
+  `&[&str]` tables remain the source of truth and are still tested.
+- The IR borrows `&str` slices of the source (`Document<'a>`), so parsing
+  doesn't allocate per token. Rows own their rendered cell text.
+- The safety check lexes into one flat token buffer per text, with line start
+  offsets, and reuses one lexer buffer, so it doesn't allocate per line.
+- The emitter writes straight into the output `String`.
+- Measured in M3 (2026-11-23, release build, whole process including I/O):
+  100k lines of typical code (2.5 MB) in about 94 ms. NASM's test files
+  repeated to 100k lines (6.9 MB, long data lines) take about 136 ms. Roughly
+  a third of the time is the safety check.

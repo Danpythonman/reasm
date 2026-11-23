@@ -31,7 +31,9 @@ dependency, though `insta` would be acceptable as a dev-dependency since it
 doesn't affect binary size (see ADR-0012).
 
 Each `CONFIGURATION.md` option gets at least one case for each value. Each
-NASM.md item gets at least one case.
+NASM.md item gets at least one case. The harness is `tests/golden.rs`; it
+also re-formats each output to check idempotency, and fails a case whose
+safety check fails.
 
 ## 3. Assembly equivalence details
 
@@ -46,7 +48,10 @@ NASM.md item gets at least one case.
 
 ## 4. Corpus
 
-`tools/fetch-corpus.sh` downloads pinned revisions of NASM-heavy projects into
+`tools/corpus/check_corpus.py` formats every `.asm` file in a directory and
+checks the safety check, idempotency, and assembled-output equality (exit 1
+on any failure). It takes `--set` overrides so several configs can be
+tested. `tools/fetch-corpus.sh` (planned) downloads pinned revisions of NASM-heavy projects into
 `tests/corpus/` (git-ignored). The suite only runs with `--features corpus` or
 `cargo test -- --ignored`. Candidates (licenses permit testing, not
 redistribution):
@@ -55,6 +60,13 @@ redistribution):
   28,096 lines, 0 W001–W003 warnings, 0 panics. 4 deliberately corrupt fuzz
   files are rejected as invalid UTF-8. This run also found the token-pasting
   label case (`start%1:`), now covered by tests.
+  Results at M3 (2026-11-23): formatted with the default config and two
+  configs that turn on almost every option. 0 safety-check failures, 0
+  idempotency failures, and all 189 files that assemble (`-f elf64` or
+  `-f bin`) give byte-identical output before and after formatting. Getting
+  there found and fixed: Mach-O section names (directive arguments are
+  whitespace-separated), `%use smartalign`'s `alignmode`, and instruction
+  names used as labels (`add:`).
 - x264 `common/x86/*.asm` and FFmpeg's `x86inc.asm`: heavy macro use, a good
   stress test
 - small hobby OS kernels (bootloaders, `-f bin`)
@@ -62,5 +74,7 @@ redistribution):
 ## 5. Performance
 
 `benches/`, or `tools/bench.sh` with `hyperfine`, formats a generated
-100k-line file and checks NFR-2. Binary size (NFR-1) is checked in CI with
+100k-line file and checks NFR-2. M3 numbers are in ARCHITECTURE §8: 94 ms for
+100k lines of typical code, which meets NFR-2 with little margin. Long-line
+input (69 bytes/line) takes 136 ms. Turning this into a CI check is M5 work. Binary size (NFR-1) is checked in CI with
 `stat` on the stripped release binary.

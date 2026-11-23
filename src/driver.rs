@@ -260,6 +260,14 @@ impl Job<'_> {
         };
 
         let formatted = format::format(text, &config, dialect);
+        if let Some(e) = &formatted.check_failure {
+            let _ = writeln!(
+                self.err,
+                "reasm: internal error: {display}: {e}. The file was left unchanged; \
+                 please report this bug with the input that caused it"
+            );
+            self.raise(Exit::Internal);
+        }
 
         let deny = self.opts.deny_warnings || config.diagnostics.deny_warnings;
         for d in &formatted.diagnostics {

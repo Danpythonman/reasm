@@ -1,0 +1,7 @@
+[case]
+mnemonic = "lower"
+register = "lower"
+size_keyword = "lower"
+data = "lower"
+directive = "lower"
+preprocessor = "lower"

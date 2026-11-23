@@ -3,7 +3,7 @@
 use super::*;
 use crate::config::Config;
 
-fn parse_with(src: &str, config: &Config) -> (Document, Vec<Diagnostic>) {
+fn parse_with<'a>(src: &'a str, config: &Config) -> (Document<'a>, Vec<Diagnostic>) {
     let source = Source::new(src);
     let mut diags = Vec::new();
     let doc = parse(&source, config, &mut diags);
@@ -15,18 +15,18 @@ fn parse_with(src: &str, config: &Config) -> (Document, Vec<Diagnostic>) {
     (doc, diags)
 }
 
-fn doc(src: &str) -> (Document, Vec<Diagnostic>) {
+fn doc(src: &str) -> (Document<'_>, Vec<Diagnostic>) {
     parse_with(src, &Config::default())
 }
 
-fn code_line(line: &Line) -> &CodeLine {
+fn code_line<'l, 'a>(line: &'l Line<'a>) -> &'l CodeLine<'a> {
     match &line.content {
         LineContent::Code(c) => c,
         other => panic!("line {} is {other:?}, expected code", line.number),
     }
 }
 
-fn one(src: &str) -> CodeLine {
+fn one(src: &str) -> CodeLine<'_> {
     let (d, diags) = doc(src);
     assert!(
         diags.iter().all(|d| d.severity == Severity::Note),
@@ -35,22 +35,22 @@ fn one(src: &str) -> CodeLine {
     code_line(&d.lines[0]).clone()
 }
 
-fn body(src: &str) -> Body {
+fn body(src: &str) -> Body<'_> {
     one(src).body.unwrap_or_else(|| panic!("{src}: no body"))
 }
 
-fn label(src: &str) -> Label {
+fn label(src: &str) -> Label<'_> {
     one(src).label.unwrap_or_else(|| panic!("{src}: no label"))
 }
 
 fn operand_kinds(b: &Body) -> Vec<(TokenKind, String)> {
     match &b.operands {
-        Operands::Tokens(t) => t.iter().map(|t| (t.kind, t.text.clone())).collect(),
+        Operands::Tokens(t) => t.iter().map(|t| (t.kind, t.text.to_string())).collect(),
         Operands::Raw(r) => panic!("raw operands: {r:?}"),
     }
 }
 
-fn raw_operands(b: &Body) -> &str {
+fn raw_operands<'a>(b: &Body<'a>) -> &'a str {
     match &b.operands {
         Operands::Raw(r) => r,
         Operands::Tokens(t) => panic!("token operands: {t:?}"),
@@ -84,11 +84,7 @@ fn label_kinds() {
         ("?q:", "?q", NonLocal),
     ] {
         let l = label(src);
-        assert_eq!(
-            (l.name.as_str(), l.kind, l.colon),
-            (name, kind, true),
-            "{src}"
-        );
+        assert_eq!((l.name, l.kind, l.colon), (name, kind, true), "{src}");
         assert!(one(src).body.is_none());
     }
 }
@@ -98,10 +94,7 @@ fn label_with_instruction() {
     let c = one(".loop: dec rcx");
     assert_eq!(c.label.unwrap().kind, LabelKind::Local);
     let b = c.body.unwrap();
-    assert_eq!(
-        (b.kind, b.keyword.text.as_str()),
-        (BodyKind::Instruction, "dec")
-    );
+    assert_eq!((b.kind, b.keyword.text), (BodyKind::Instruction, "dec"));
     assert_eq!(operand_kinds(&b), [(TokenKind::Register, "rcx".into())]);
 }
 
@@ -109,7 +102,7 @@ fn label_with_instruction() {
 fn colonless_labels() {
     let c = one("msg db \"hi\", 10");
     assert_eq!(
-        c.label.as_ref().map(|l| (l.name.as_str(), l.colon)),
+        c.label.as_ref().map(|l| (l.name, l.colon)),
         Some(("msg", false))
     );
     assert_eq!(c.body.unwrap().kind, BodyKind::Data);
@@ -143,6 +136,35 @@ fn directive_names_as_labels() {
     assert_eq!(c.body.unwrap().kind, BodyKind::Section);
 }
 
+#[test]
+fn keywords_as_labels_with_a_colon() {
+    // Verified with NASM 2.16.01 (test/insnlbl.asm).
+    for src in [
+        "add: jmp add-2",
+        "do: jmp 1",
+        "nop: nop",
+        "db: nop",
+        "resb: nop",
+        "equ: nop",
+    ] {
+        let c = one(src);
+        assert!(c.label.as_ref().is_some_and(|l| l.colon), "{src}");
+        assert_eq!(c.body.unwrap().kind, BodyKind::Instruction, "{src}");
+    }
+    for src in [
+        "rax: nop",
+        "byte: nop",
+        "lock: nop",
+        "wait: nop",
+        "align: nop",
+        "rel: nop",
+    ] {
+        let (d, _) = doc(src);
+        let is_label = matches!(&d.lines[0].content, LineContent::Code(c) if c.label.is_some());
+        assert!(!is_label, "{src}");
+    }
+}
+
 // --- §4 classification ------------------------------------------------------------
 
 #[test]
@@ -160,7 +182,7 @@ fn directives() {
 
     let b = body("[bits 64]");
     assert_eq!(
-        (b.kind, b.bracketed, b.keyword.text.as_str()),
+        (b.kind, b.bracketed, b.keyword.text),
         (BodyKind::Directive, true, "bits")
     );
     assert_eq!(operand_kinds(&b), [(TokenKind::Number, "64".into())]);
@@ -188,13 +210,13 @@ fn prefixes() {
     let prefix_texts = |b: &Body| {
         b.prefixes
             .iter()
-            .map(|t| t.text.clone())
+            .map(|t| t.text.to_string())
             .collect::<Vec<_>>()
     };
 
     let b = body("lock add [rax], 1");
     assert_eq!(
-        (prefix_texts(&b), b.keyword.text.as_str()),
+        (prefix_texts(&b), b.keyword.text),
         (vec!["lock".to_string()], "add")
     );
     assert_eq!(b.prefixes[0].kind, TokenKind::Prefix);
@@ -212,13 +234,13 @@ fn prefixes() {
     assert_eq!(body("wait").keyword.text, "wait");
     let b = body("wait fnop");
     assert_eq!(
-        (prefix_texts(&b), b.keyword.text.as_str()),
+        (prefix_texts(&b), b.keyword.text),
         (vec!["wait".to_string()], "fnop")
     );
 
     let b = body("{vex} vpdpbusd xmm1, xmm2, xmm3");
     assert_eq!(
-        (b.prefixes[0].kind, b.keyword.text.as_str()),
+        (b.prefixes[0].kind, b.keyword.text),
         (TokenKind::Decorator, "vpdpbusd")
     );
 }
@@ -227,28 +249,22 @@ fn prefixes() {
 fn times() {
     let b = body("times 10 db 0");
     assert_eq!(
-        b.prefixes
-            .iter()
-            .map(|t| t.text.as_str())
-            .collect::<Vec<_>>(),
+        b.prefixes.iter().map(|t| t.text).collect::<Vec<_>>(),
         ["times", "10"]
     );
-    assert_eq!((b.kind, b.keyword.text.as_str()), (BodyKind::Data, "db"));
+    assert_eq!((b.kind, b.keyword.text), (BodyKind::Data, "db"));
 
     let b = body("times 510-($-$$) db 0");
     assert_eq!(b.keyword.text, "db");
     assert_eq!(b.prefixes.len(), 8);
 
     let b = body("times 4 nop");
-    assert_eq!(
-        (b.kind, b.keyword.text.as_str()),
-        (BodyKind::Instruction, "nop")
-    );
+    assert_eq!((b.kind, b.keyword.text), (BodyKind::Instruction, "nop"));
 
     // No recognizable keyword: `times` itself is the keyword.
     let (d, _) = doc("times 4 MYMACRO");
     let b = code_line(&d.lines[0]).body.clone().unwrap();
-    assert_eq!((b.kind, b.keyword.text.as_str()), (BodyKind::Data, "times"));
+    assert_eq!((b.kind, b.keyword.text), (BodyKind::Data, "times"));
 }
 
 #[test]
@@ -297,10 +313,7 @@ fn comments_and_strings() {
 
     let c = one("   ; hi");
     assert!(c.label.is_none() && c.body.is_none());
-    assert_eq!(
-        (c.comment.unwrap().text.as_str(), c.original_column),
-        (" hi", 3)
-    );
+    assert_eq!((c.comment.unwrap().text, c.original_column), (" hi", 3));
     assert_eq!(one("\t; x").original_column, 8);
     assert_eq!(one("  \t; x").original_column, 8);
 
@@ -316,7 +329,7 @@ fn comments_and_strings() {
 fn preprocessor_lines() {
     let b = body("%define X 1 + 2");
     assert_eq!(
-        (b.kind, b.keyword.kind, b.keyword.text.as_str()),
+        (b.kind, b.keyword.kind, b.keyword.text),
         (
             BodyKind::Preprocessor,
             TokenKind::PreprocessorName,
@@ -499,10 +512,7 @@ fn operand_lex_errors_degrade_to_raw() {
     let (d, diags) = doc("mov eax, \\weird\n");
     assert!(diags.is_empty(), "{diags:?}");
     let b = code_line(&d.lines[0]).body.clone().unwrap();
-    assert_eq!(
-        (b.keyword.text.as_str(), raw_operands(&b)),
-        ("mov", "eax, \\weird")
-    );
+    assert_eq!((b.keyword.text, raw_operands(&b)), ("mov", "eax, \\weird"));
 }
 
 // --- ADR-0019 macros -------------------------------------------------------------------

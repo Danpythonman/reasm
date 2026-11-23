@@ -1,0 +1,5 @@
+[comments]
+align = "block"
+column = 0
+[alignment]
+break_on = ["blank", "label", "comment", "block", "directive"]
