@@ -2,11 +2,12 @@
 //! ADR-0019), block structure (ADR-0007), `%if 0` regions, and
 //! `reasm: off/on/skip` (ADR-0017).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 
 use super::lexer::{self, LexError, Tok};
 use super::tables;
-use crate::config::{Config, NasmOptions};
+use crate::config::{CaseStyle, Config, NasmOptions};
 use crate::diag::{Diagnostic, Severity};
 use crate::ir::*;
 use crate::source::Source;
@@ -18,14 +19,16 @@ pub mod codes {
     pub const UNBALANCED_BLOCK: &str = "W003";
     pub const ASSUMED_MACRO: &str = "N001";
     pub const UNCLOSED_OFF: &str = "N002";
+    pub const COMPUTED_MACRO_NAMES: &str = "N003";
 }
 
 pub fn parse<'a>(
     source: &Source<'a>,
+    path: Option<&Path>,
     config: &Config,
     diags: &mut Vec<Diagnostic>,
 ) -> Document<'a> {
-    let macros = Macros::collect(&source.lines, &config.nasm);
+    let macros = Macros::collect(&source.lines, path, &config.nasm);
     let classifier = Classifier {
         macros,
         tab_width: config.indent.tab_width.max(1),
@@ -87,6 +90,45 @@ pub fn parse<'a>(
     }
     let mut doc = b.finish(diags);
     classifier.macros.protect(&mut doc);
+    // Any keyword could be a macro when some macro names are computed,
+    // or when the file calls macros whose definitions reasm can't see
+    // (ADR-0022): `RET` in a file included after x86inc.asm.
+    let unseen = || {
+        diags
+            .iter()
+            .find(|d| d.code == codes::ASSUMED_MACRO)
+            .map(|d| {
+                format!(
+                    "line {} calls a macro defined in a file reasm can't see",
+                    d.line
+                )
+            })
+    };
+    let why = classifier
+        .macros
+        .computed
+        .as_ref()
+        .map(|at| format!("{at} defines macros whose names reasm can't know"))
+        .or_else(unseen);
+    if let Some(why) = why {
+        doc.keep_keyword_case = true;
+        let c = &config.case;
+        let wanted = [c.mnemonic, c.register, c.size_keyword, c.data, c.directive]
+            .iter()
+            .any(|&s| s != CaseStyle::Preserve);
+        if wanted {
+            diags.push(diag(
+                Severity::Note,
+                codes::COMPUTED_MACRO_NAMES,
+                0,
+                0,
+                format!(
+                    "keyword case left unchanged: {why}, so any keyword could be a \
+                     macro (see `nasm.include_paths` and `nasm.known_macros`)"
+                ),
+            ));
+        }
+    }
     doc
 }
 
@@ -120,46 +162,184 @@ struct Macros {
     exact_lower: HashSet<String>,
     /// Lowercased names of case-insensitive macros.
     folded: HashSet<String>,
+    /// Lowercased name → index of the first greedy parameter (`%macro m
+    /// 2+` → 1), the smallest over all definitions of the name.
+    greedy: HashMap<String, usize>,
+    /// Lowercased names of macros defined in this file whose body
+    /// stringifies (`%defstr`, `%str`), so the spacing of their arguments
+    /// can reach the output.
+    stringify: HashSet<String>,
+    /// Where a macro whose name is computed (`%macro %1`, `%xdefine
+    /// %$p%2`) is defined, if any: then any word could be a macro
+    /// (ADR-0022).
+    computed: Option<String>,
+}
+
+/// Where the pre-pass looks for `%include` files (ADR-0022).
+struct IncludeSearch {
+    paths: Vec<PathBuf>,
+    visited: HashSet<PathBuf>,
+}
+
+/// At most this many included files are read per formatted file.
+const MAX_INCLUDES: usize = 64;
+
+impl IncludeSearch {
+    fn resolve(&self, name: &str, dir: Option<&Path>) -> Option<PathBuf> {
+        dir.into_iter()
+            .chain(self.paths.iter().map(PathBuf::as_path))
+            .map(|d| d.join(name))
+            .find(|p| p.is_file())
+    }
 }
 
 impl Macros {
-    fn collect(lines: &[&str], opts: &NasmOptions) -> Self {
+    fn collect(lines: &[&str], path: Option<&Path>, opts: &NasmOptions) -> Self {
         let mut m = Self {
             exact: opts.known_macros.iter().cloned().collect(),
             exact_lower: HashSet::new(),
+            greedy: HashMap::new(),
+            stringify: HashSet::new(),
+            computed: None,
             folded: opts
                 .known_imacros
                 .iter()
                 .map(|s| s.to_ascii_lowercase())
                 .collect(),
         };
-        for line in lines {
+        // NASM searches the current directory and then `-I` paths; the
+        // including file's own directory is tried first, since projects
+        // usually build from a directory where that is what `-I` names.
+        let mut search = IncludeSearch {
+            paths: std::iter::once(PathBuf::from("."))
+                .chain(opts.include_paths.iter().map(PathBuf::from))
+                .collect(),
+            visited: HashSet::new(),
+        };
+        if let Some(p) = path.and_then(|p| p.canonicalize().ok()) {
+            search.visited.insert(p);
+        }
+        let dir = path.and_then(Path::parent);
+        m.scan(lines.iter().copied(), None, dir, &mut search);
+        m.exact_lower = m.exact.iter().map(|s| s.to_ascii_lowercase()).collect();
+        m
+    }
+
+    /// Collects macro names from `lines`. `file` names an included file
+    /// (for diagnostics); `dir` is the directory includes are resolved
+    /// against first.
+    fn scan<'l>(
+        &mut self,
+        lines: impl Iterator<Item = &'l str>,
+        file: Option<&str>,
+        dir: Option<&Path>,
+        search: &mut IncludeSearch,
+    ) {
+        // Macros whose definitions we are inside (lowercased).
+        let mut open: Vec<String> = Vec::new();
+        for (idx, line) in lines.enumerate() {
             let mut words = line.split_whitespace();
-            let (Some(directive), Some(name)) = (words.next(), words.next()) else {
+            if !open.is_empty() && line.contains('%') {
+                let lower = line.to_ascii_lowercase();
+                // Also matches `%idefstr`, `%strcat`, ...: conservative.
+                if lower.contains("defstr") || lower.contains("%str") {
+                    self.stringify.extend(open.iter().cloned());
+                }
+            }
+            let Some(directive) = words.next() else {
                 continue;
             };
             if !directive.starts_with('%') {
                 continue;
             }
-            if directive.eq_ignore_ascii_case("%use") {
+            let lower_directive = directive.to_ascii_lowercase();
+            if matches!(lower_directive.as_str(), "%endmacro" | "%endm") {
+                open.pop();
+                continue;
+            }
+            let Some(name) = words.next() else {
+                continue;
+            };
+            if lower_directive == "%include" {
+                self.include(line, dir, search);
+                continue;
+            }
+            if matches!(
+                lower_directive.as_str(),
+                "%macro" | "%imacro" | "%rmacro" | "%irmacro"
+            ) {
+                let lower = name.to_ascii_lowercase();
+                if let Some(g) = words.next().and_then(greedy_index) {
+                    let e = self.greedy.entry(lower.clone()).or_insert(g);
+                    *e = (*e).min(g);
+                }
+                open.push(lower);
+            }
+            if lower_directive == "%use" {
                 // Statement-level macros of the standard packages.
                 let package = name.trim_matches(['"', '\'', '<', '>']);
                 if package.eq_ignore_ascii_case("smartalign") {
-                    m.folded.insert("alignmode".into());
+                    self.folded.insert("alignmode".into());
                 }
                 continue;
             }
-            let name = name.split('(').next().unwrap_or(name).to_string();
-            match directive.to_ascii_lowercase().as_str() {
+            let name = name.split('(').next().unwrap_or(name);
+            let defines = match lower_directive.as_str() {
                 "%macro" | "%rmacro" | "%define" | "%xdefine" | "%assign" | "%defstr"
-                | "%deftok" => m.exact.insert(name),
+                | "%deftok" => {
+                    self.exact.insert(name.to_string());
+                    true
+                }
                 "%imacro" | "%irmacro" | "%idefine" | "%ixdefine" | "%iassign" | "%idefstr"
-                | "%ideftok" => m.folded.insert(name.to_ascii_lowercase()),
+                | "%ideftok" => {
+                    self.folded.insert(name.to_ascii_lowercase());
+                    true
+                }
                 _ => false,
             };
+            if defines && self.computed.is_none() && computed_name(name) {
+                let at = match file {
+                    Some(f) => format!("{f}:{}", idx + 1),
+                    None => format!("line {}", idx + 1),
+                };
+                self.computed = Some(format!("`{directive} {name}` at {at}"));
+            }
         }
-        m.exact_lower = m.exact.iter().map(|s| s.to_ascii_lowercase()).collect();
-        m
+    }
+
+    /// Scans the file named by an `%include` line, if it can be found.
+    fn include(&mut self, line: &str, dir: Option<&Path>, search: &mut IncludeSearch) {
+        let Some(name) = include_name(line) else {
+            return;
+        };
+        if search.visited.len() > MAX_INCLUDES {
+            return;
+        }
+        let Some(path) = search.resolve(name, dir) else {
+            return;
+        };
+        let Ok(canonical) = path.canonicalize() else {
+            return;
+        };
+        if !search.visited.insert(canonical) {
+            return;
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            return;
+        };
+        let display = path.display().to_string();
+        self.scan(text.lines(), Some(&display), path.parent(), search);
+    }
+
+    /// How a call to macro `name` may be respaced (ADR-0021): `None` if
+    /// not at all, else the index of the first argument that must stay as
+    /// written (`usize::MAX` for none).
+    fn respace_from(&self, name: &str) -> Option<usize> {
+        let lower = name.to_ascii_lowercase();
+        if self.stringify.contains(&lower) {
+            return None;
+        }
+        Some(self.greedy.get(&lower).copied().unwrap_or(usize::MAX))
     }
 
     fn contains(&self, word: &str) -> bool {
@@ -199,6 +379,48 @@ impl Macros {
             }
         }
     }
+}
+
+/// The file named by an `%include` line: `%include "x.inc"`, `'x.inc'` or
+/// `<x.inc>`. `None` for names built by the preprocessor.
+fn include_name(line: &str) -> Option<&str> {
+    let rest = line.trim_start()[8..].trim();
+    let close = match rest.chars().next()? {
+        '"' => '"',
+        '\'' => '\'',
+        '<' => '>',
+        _ => return None,
+    };
+    let name = rest[1..].split(close).next()?;
+    (!name.is_empty() && !name.contains('%')).then_some(name)
+}
+
+/// Whether a defined name is computed by the preprocessor, so it could be
+/// any word: `%1`, `%$prefix%2`, `foo%+bar`. Context-local (`%$x`) and
+/// macro-local (`%%x`) names can't shadow a keyword.
+fn computed_name(name: &str) -> bool {
+    let rest = name
+        .trim_start_matches("%%")
+        .trim_start_matches('%')
+        .trim_start_matches('$');
+    if name.starts_with('%') && rest.len() + 1 == name.len() {
+        // `%` followed by neither `%` nor `$`: `%1`, `%{1}`, `%[x]`.
+        return true;
+    }
+    rest.contains('%')
+}
+
+/// The first greedy parameter of a `%macro` parameter spec: `2+` → 1,
+/// `1-3+.nolist` → 2. `None` if no parameter is greedy.
+fn greedy_index(spec: &str) -> Option<usize> {
+    let spec = spec.split('.').next().unwrap_or(spec);
+    let range = spec.strip_suffix('+')?;
+    let (min, max) = range.split_once('-').unwrap_or((range, range));
+    let n = max
+        .parse::<usize>()
+        .or_else(|_| min.parse::<usize>())
+        .ok()?;
+    Some(n.saturating_sub(1))
 }
 
 // ---------------------------------------------------------------------------
@@ -380,7 +602,10 @@ impl<'a> Builder<'a> {
                     .into(),
             ));
         }
-        Document { lines: self.lines }
+        Document {
+            lines: self.lines,
+            keep_keyword_case: false,
+        }
     }
 }
 
@@ -525,11 +750,40 @@ fn token<'a>(code: &'a str, tok: &Tok, kind: TokenKind) -> Token<'a> {
 }
 
 fn operand_tokens<'a>(code: &'a str, toks: &[Tok]) -> Operands<'a> {
-    Operands::Tokens(
-        toks.iter()
-            .map(|t| token(code, t, operand_kind(t, &code[t.start..t.end])))
-            .collect(),
-    )
+    Operands::Tokens(operand_list(code, toks))
+}
+
+fn operand_list<'a>(code: &'a str, toks: &[Tok]) -> Vec<Token<'a>> {
+    toks.iter()
+        .map(|t| token(code, t, operand_kind(t, &code[t.start..t.end])))
+        .collect()
+}
+
+/// Splits macro-call operand tokens into arguments at commas (ADR-0021).
+/// Arguments from index `raw_from` on are kept as written. `None` when
+/// the list must not be respaced at all.
+fn macro_args<'a>(code: &'a str, toks: &[Tok], raw_from: usize) -> Option<Vec<MacroArg<'a>>> {
+    // `name(...)` may be a single-line macro call, whose arguments keep
+    // their spacing.
+    if toks.first()?.kind == TokenKind::OpenParen {
+        return None;
+    }
+    let mut args = Vec::new();
+    let mut start = 0;
+    for i in 0..=toks.len() {
+        if i < toks.len() && toks[i].kind != TokenKind::Comma {
+            continue;
+        }
+        if args.len() == raw_from {
+            let end = toks.last().map_or(0, |t| t.end);
+            let rest = toks.get(start).map_or("", |t| &code[t.start..end]);
+            args.push(MacroArg::Raw(rest));
+            return Some(args);
+        }
+        args.push(MacroArg::Tokens(operand_list(code, &toks[start..i])));
+        start = i + 1;
+    }
+    Some(args)
 }
 
 struct Classifier {
@@ -697,7 +951,12 @@ impl Classifier {
             let alone = toks.len() == 1 && err.is_none();
             // A lone word at column 0 is a label; indented, it is more
             // likely a macro call without arguments (ADR-0019).
-            if (alone && original_column == 0) || self.is_statement_start(code, toks.get(1)) {
+            // No statement keyword is followed by a comma, so in
+            // `SBUTTERFLY dq, 0, 1` the keyword is a macro argument.
+            let comma_next = toks.get(2).is_some_and(|t| t.kind == TokenKind::Comma);
+            if (alone && original_column == 0)
+                || (self.is_statement_start(code, toks.get(1)) && !comma_next)
+            {
                 label = Some(make_label(&toks[0], false));
                 i = 1;
             }
@@ -841,7 +1100,16 @@ impl Classifier {
             return Err(e.clone());
         }
         let rest = code[kw.end..].trim();
-        let operands = if kind == BodyKind::MacroCall || err.is_some() {
+        let operands = if kind == BodyKind::MacroCall {
+            let args = match (err, kw_kind) {
+                (None, TokenKind::Identifier) => self
+                    .macros
+                    .respace_from(&code[kw.start..kw.end])
+                    .and_then(|from| macro_args(code, &toks[j + 1..], from)),
+                _ => None,
+            };
+            Operands::MacroArgs { raw: rest, args }
+        } else if err.is_some() {
             Operands::Raw(rest)
         } else {
             operand_tokens(code, &toks[j + 1..])

@@ -44,6 +44,12 @@ macro `foo` with argument `bar`.
     (`msg db 1`) it is always a label and may be split.
   - `%use smartalign` adds `alignmode` to the known macros.
 
+- *Added in M4, from x264, dav1d and FFmpeg:*
+  - A word before a keyword that is directly followed by a comma is a macro
+    call, never a label: no statement keyword takes an empty first operand,
+    so in `SBUTTERFLY dq, 0, 1, 2` (macro from an include) `dq` is an
+    argument.
+
 ## Consequences
 Code from projects that use many macros from `%include` files might want
 `known_macros` set to get the best label detection. This is documented in

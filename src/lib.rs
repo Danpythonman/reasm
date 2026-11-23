@@ -20,7 +20,7 @@ pub use format::Formatted;
 /// dialect, or when the safety check finds a reasm bug (ADR-0011).
 pub fn format_str(src: &str, config: &Config) -> Result<Formatted, String> {
     let dialect = dialect::select(Some(&config.dialect), None)?;
-    let formatted = format::format(src, config, dialect);
+    let formatted = format::format(src, None, config, dialect);
     match &formatted.check_failure {
         Some(e) => Err(format!("internal error: {e}")),
         None => Ok(formatted),

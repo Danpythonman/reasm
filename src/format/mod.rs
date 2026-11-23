@@ -10,6 +10,7 @@ use crate::config::{Config, LineEndingStyle};
 use crate::diag::Diagnostic;
 use crate::dialect::Dialect;
 use crate::source::{LineEnding, Source};
+use std::path::Path;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Formatted {
@@ -22,7 +23,9 @@ pub struct Formatted {
     pub check_failure: Option<String>,
 }
 
-pub fn format(src: &str, config: &Config, dialect: &dyn Dialect) -> Formatted {
+/// Formats `src`. `path` is where it was read from, if anywhere; the
+/// dialect may read included files relative to it (ADR-0022).
+pub fn format(src: &str, path: Option<&Path>, config: &Config, dialect: &dyn Dialect) -> Formatted {
     let source = Source::new(src);
     let newline = match config.line_ending {
         LineEndingStyle::Preserve => source.line_ending,
@@ -32,8 +35,19 @@ pub fn format(src: &str, config: &Config, dialect: &dyn Dialect) -> Formatted {
     .as_str();
 
     let mut diagnostics = Vec::new();
-    let doc = dialect.parse(&source, config, &mut diagnostics);
+    let doc = dialect.parse(&source, path, config, &mut diagnostics);
     debug_assert_eq!(doc.lines.len(), source.lines.len());
+    let kept;
+    let config = if doc.keep_keyword_case {
+        let mut c = config.clone();
+        let preprocessor = c.case.preprocessor;
+        c.case = Default::default();
+        c.case.preprocessor = preprocessor;
+        kept = c;
+        &kept
+    } else {
+        config
+    };
 
     let rows = normalize::rows(&doc, &source.lines, config, dialect);
     let cols = layout::layout(&rows, config);
@@ -61,7 +75,7 @@ mod tests {
     use crate::dialect::nasm::Nasm;
 
     fn fmt(src: &str) -> String {
-        format(src, &Config::default(), &Nasm).text
+        format(src, None, &Config::default(), &Nasm).text
     }
 
     #[test]
@@ -84,12 +98,12 @@ mod tests {
             line_ending: LineEndingStyle::Lf,
             ..Config::default()
         };
-        assert_eq!(format("a\r\nb\r\n", &lf, &Nasm).text, "a\nb\n");
+        assert_eq!(format("a\r\nb\r\n", None, &lf, &Nasm).text, "a\nb\n");
         let crlf = Config {
             line_ending: LineEndingStyle::Crlf,
             ..Config::default()
         };
-        assert_eq!(format("a\nb\n", &crlf, &Nasm).text, "a\r\nb\r\n");
+        assert_eq!(format("a\nb\n", None, &crlf, &Nasm).text, "a\r\nb\r\n");
     }
 
     #[test]
@@ -100,7 +114,7 @@ mod tests {
 
     #[test]
     fn reports_parse_diagnostics() {
-        let out = format("db 'oops\n", &Config::default(), &Nasm);
+        let out = format("db 'oops\n", None, &Config::default(), &Nasm);
         assert_eq!(out.diagnostics.len(), 1);
         assert_eq!(out.diagnostics[0].code, "W002");
     }

@@ -48,13 +48,18 @@ safety check fails.
 
 ## 4. Corpus
 
-`tools/corpus/check_corpus.py` formats every `.asm` file in a directory and
-checks the safety check, idempotency, and assembled-output equality (exit 1
-on any failure). It takes `--set` overrides so several configs can be
-tested. `tools/fetch-corpus.sh` (planned) downloads pinned revisions of NASM-heavy projects into
-`tests/corpus/` (git-ignored). The suite only runs with `--features corpus` or
-`cargo test -- --ignored`. Candidates (licenses permit testing, not
-redistribution):
+`tools/fetch-corpus.sh` downloads pinned revisions of x264, dav1d 1.5.5 and
+FFmpeg 7.1.5 into `tests/corpus/` (git-ignored, about 12 MB: only the x86
+asm directories are checked out). `tools/corpus/run.sh` runs
+`tools/corpus/check_corpus.py` on each project with its include paths and
+defines (stand-in `config.asm` files are in `tools/corpus/<project>/`),
+under the default config plus any extra configs given as arguments.
+
+`check_corpus.py` copies a tree, formats every `.asm`/`.inc`/`.mac` file
+in the copy (so included files are formatted too), and checks the safety
+check, idempotency, and that every file that assembles gives identical
+object bytes in both trees. It exits 1 on any failure. Candidates
+(licenses permit testing, not redistribution):
 
 - NASM's own `test/` directory. Results at M2 (2026-11-22): 219 files and
   28,096 lines, 0 W001–W003 warnings, 0 panics. 4 deliberately corrupt fuzz
@@ -67,8 +72,27 @@ redistribution):
   there found and fixed: Mach-O section names (directive arguments are
   whitespace-separated), `%use smartalign`'s `alignmode`, and instruction
   names used as labels (`add:`).
-- x264 `common/x86/*.asm` and FFmpeg's `x86inc.asm`: heavy macro use, a good
-  stress test
+- x264, dav1d and FFmpeg: heavy macro use through `x86inc.asm`. Results
+  at M4 (2026-11-23): 229 files (x264 20, dav1d 49, FFmpeg 160) under the
+  default config and two configs that turn on almost every option,
+  `format_macro_args` included. 0 safety-check failures, 0 idempotency
+  failures, and all 222 files that assemble for x86-64 give identical
+  object files (the other 7 don't assemble with this setup, for example
+  x264's 32-bit-only `dct-32.asm`). NASM's test suite, rerun
+  under the same configs, is unchanged at 190/190. Getting there found
+  and fixed:
+  - a lexer bug in pasted names (`v%{5}213%6`, `%%top_{%$v}%1`), which the
+    safety check missed because it uses the same lexer; the check now also
+    rejects whitespace inserted between touching tokens (ADR-0011);
+  - `SBUTTERFLY dq, 0, 1, 2` (macro from an include) split as a label plus
+    `dq` (ADR-0019);
+  - `{evex}vpmulhrsw` gaining a space, and a safety-check false positive
+    when several labels are split onto their own lines;
+  - case changes breaking x86inc's instruction macros (`%macro %1`,
+    `RET`), fixed by reading included files and freezing keyword case
+    when macro names can't all be known (ADR-0022);
+  - `%str` in single-line macro calls (`f([ rax ])`) seeing changed
+    spacing or case (ADR-0021).
 - small hobby OS kernels (bootloaders, `-f bin`)
 
 ## 5. Performance

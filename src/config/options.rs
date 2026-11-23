@@ -320,6 +320,8 @@ impl Default for Preprocessor {
 pub struct NasmOptions {
     pub known_macros: Vec<String>,
     pub known_imacros: Vec<String>,
+    /// Extra directories searched for `%include` files (ADR-0022).
+    pub include_paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

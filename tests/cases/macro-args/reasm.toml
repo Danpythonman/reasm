@@ -1,0 +1,9 @@
+[preprocessor]
+format_macro_args = true
+
+[case]
+register = "lower"
+
+[operands]
+bracket_padding = "none"
+memory_plus_minus = "spaced"

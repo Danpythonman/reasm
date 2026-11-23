@@ -69,7 +69,9 @@ An unterminated string makes the line verbatim, with warning W002.
   `DB` all assemble).
 - **Token pasting [verified]:** in macro bodies, pieces like `start%1` or
   `.count_%+1` form a single name. The lexer joins an identifier and a `%`
-  construct that touch with no space between them into one token.
+  construct that touch with no space between them into one token, and digits
+  and `{...}` groups that follow a `%` construct (`v%{5}213%6` from x264,
+  `%%top_{%$v}%1` from NASM's `test/paste.asm`).
 
 ## 4. Classifying a line (ADR-0019)
 
@@ -158,6 +160,14 @@ are subsets of the generated tables.
   inside them is meaningful: `section __LD,__compact_unwind` (Mach-O) differs
   from `section __LD, __compact_unwind`. reasm only shortens runs of spaces
   in directive arguments; the `[operands]` rules don't apply to them.
+
+- **[verified]** Macro arguments (ADR-0021): spacing around each argument
+  is dropped, spacing inside is kept (one space per run) and reaches
+  `%defstr`/`%str`; a greedy parameter (`1+`) keeps the commas and spacing
+  of the rest of the line; `%ifidn` ignores spacing but not case;
+  parentheses don't group arguments, braces do. Single-line macro
+  arguments (`f( a ,b )`) also keep spacing and case through `%str`, and
+  `f (x)` with a space is still a call.
 
 ## 7. Preprocessor
 

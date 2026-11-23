@@ -43,6 +43,13 @@ compared to the risk.
   which is why the corpus run assembles both versions. It also had one false
   positive of its own (a colon added on the second line of a joined pair),
   which was fixed.
+- *Added in M4:* a check that uses the dialect's own lexer can't catch a
+  lexer bug. x264's `v%{5}213%6` (one pasted name) was split by the lexer
+  into two tokens and the formatter inserted a space between them; the
+  token sequences still matched. The check now also rejects **whitespace
+  inserted between tokens that touched in the input**, unless one side is
+  punctuation the formatter spaces (`,` `[` `]` `(` `)` `:` `+` `-` `*`).
+  Removing whitespace is still checked by re-lexing only.
 
 ## Alternatives
 - **Running `nasm` every time:** this is the strongest check, but it needs

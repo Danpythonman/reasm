@@ -5,7 +5,7 @@ small binary. The first supported dialect is **NASM** (x86 / x86-64). The design
 keeps dialect-specific code separate from the shared formatter so that more
 dialects (GAS/AT&T, MASM, ...) can be added later.
 
-> **Status:** early development (milestone M3 of [the roadmap](docs/ROADMAP.md)).
+> **Status:** early development (milestone M4 of [the roadmap](docs/ROADMAP.md)).
 > Formatting works with every option in CONFIGURATION.md except
 > `format_macro_args`. A safety check refuses to write a file if anything
 > other than whitespace, keyword case or a label colon would change. On

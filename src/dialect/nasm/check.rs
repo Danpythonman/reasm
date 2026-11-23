@@ -72,6 +72,7 @@ fn other(text: &str) -> CheckToken<'_> {
     CheckToken {
         kind: CheckKind::Other,
         text,
+        space_before: true,
     }
 }
 
@@ -79,6 +80,7 @@ fn word(text: &str) -> CheckToken<'_> {
     CheckToken {
         kind: CheckKind::Word,
         text,
+        space_before: true,
     }
 }
 
@@ -119,15 +121,17 @@ fn check_line<'a>(line: &'a str, out: &mut Vec<CheckToken<'a>>, toks: &mut Vec<T
         }
     } else if !code.is_empty() {
         let err = lexer::lex_into(code, toks);
-        for t in toks.iter() {
+        for (i, t) in toks.iter().enumerate() {
             let text = &code[t.start..t.end];
-            out.push(match t.kind {
-                TokenKind::Identifier | TokenKind::MacroParam => word(text),
-                TokenKind::Colon => CheckToken {
-                    kind: CheckKind::Colon,
-                    text,
-                },
-                _ => other(text),
+            let kind = match t.kind {
+                TokenKind::Identifier | TokenKind::MacroParam => CheckKind::Word,
+                TokenKind::Colon => CheckKind::Colon,
+                _ => CheckKind::Other,
+            };
+            out.push(CheckToken {
+                kind,
+                text,
+                space_before: i == 0 || t.space_before,
             });
         }
         if err.is_some() {
@@ -141,6 +145,7 @@ fn check_line<'a>(line: &'a str, out: &mut Vec<CheckToken<'a>>, toks: &mut Vec<T
         out.push(CheckToken {
             kind: CheckKind::Comment,
             text: c.trim(),
+            space_before: true,
         });
     }
 }
@@ -220,6 +225,9 @@ mod tests {
         let b = check_lines("section __LD, __compact_unwind data\n[bits 64]");
         assert_eq!(a.line(0)[1].text, "__LD,__compact_unwind");
         assert_ne!(a.line(0), b.line(0));
-        assert_eq!(a.line(1), b.line(1));
+        fn texts<'a>(c: &CheckLines<'a>) -> Vec<&'a str> {
+            c.line(1).iter().map(|t| t.text).collect()
+        }
+        assert_eq!(texts(&a), texts(&b));
     }
 }

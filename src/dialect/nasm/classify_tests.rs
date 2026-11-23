@@ -6,7 +6,7 @@ use crate::config::Config;
 fn parse_with<'a>(src: &'a str, config: &Config) -> (Document<'a>, Vec<Diagnostic>) {
     let source = Source::new(src);
     let mut diags = Vec::new();
-    let doc = parse(&source, config, &mut diags);
+    let doc = parse(&source, None, config, &mut diags);
     assert_eq!(
         doc.lines.len(),
         source.lines.len(),
@@ -46,13 +46,13 @@ fn label(src: &str) -> Label<'_> {
 fn operand_kinds(b: &Body) -> Vec<(TokenKind, String)> {
     match &b.operands {
         Operands::Tokens(t) => t.iter().map(|t| (t.kind, t.text.to_string())).collect(),
-        Operands::Raw(r) => panic!("raw operands: {r:?}"),
+        Operands::Raw(r) | Operands::MacroArgs { raw: r, .. } => panic!("raw operands: {r:?}"),
     }
 }
 
 fn raw_operands<'a>(b: &Body<'a>) -> &'a str {
     match &b.operands {
-        Operands::Raw(r) => r,
+        Operands::Raw(r) | Operands::MacroArgs { raw: r, .. } => r,
         Operands::Tokens(t) => panic!("token operands: {t:?}"),
     }
 }
@@ -543,6 +543,15 @@ fn macro_calls() {
     assert_eq!(c.label.as_ref().unwrap().name, "entry");
     assert_eq!(c.body.as_ref().unwrap().kind, BodyKind::MacroCall);
 
+    // A keyword followed by a comma is a macro argument, not a statement
+    // after a colonless label (x264's `SBUTTERFLY dq, 0, 1, 2`).
+    for src in ["    SBUTTERFLY dq, 0, 1, 2\n", "    cglobal add, 2\n"] {
+        let (d, _) = doc(src);
+        let c = code_line(&d.lines[0]);
+        assert!(c.label.is_none(), "{src}");
+        assert_eq!(c.body.as_ref().unwrap().kind, BodyKind::MacroCall, "{src}");
+    }
+
     // Single-line macros used as statements.
     let (_, diags) = doc("%define SAVE push rax\n    SAVE\n");
     assert!(diags.is_empty());
@@ -577,4 +586,128 @@ fn every_line_is_accounted_for() {
     let (d, _) = doc(src);
     let numbers: Vec<u32> = d.lines.iter().map(|l| l.number).collect();
     assert_eq!(numbers, (1..=7).collect::<Vec<_>>());
+}
+
+/// The argument texts of the call on line `n`, or `None` if the list may
+/// not be respaced (ADR-0021).
+fn args_of(d: &Document, n: usize) -> Option<Vec<String>> {
+    let b = code_line(&d.lines[n]).body.as_ref().unwrap();
+    let Operands::MacroArgs { args, .. } = &b.operands else {
+        panic!("line {n}: {:?}", b.operands)
+    };
+    Some(
+        args.as_ref()?
+            .iter()
+            .map(|a| match a {
+                MacroArg::Tokens(t) => t.iter().map(|t| t.text).collect::<Vec<_>>().join(" "),
+                MacroArg::Raw(r) => format!("raw:{r}"),
+            })
+            .collect(),
+    )
+}
+
+#[test]
+fn greedy_parameter_specs() {
+    assert_eq!(greedy_index("2"), None);
+    assert_eq!(greedy_index("1+"), Some(0));
+    assert_eq!(greedy_index("2+.nolist"), Some(1));
+    assert_eq!(greedy_index("1-3+"), Some(2));
+    assert_eq!(greedy_index("0-*"), None);
+}
+
+#[test]
+fn macro_arguments() {
+    let src = "%macro two 2\n\
+               mov %1, %2\n\
+               %endmacro\n\
+               %macro tail 1-2+\n\
+               db %2\n\
+               %endmacro\n\
+               %macro name 1\n\
+               %defstr s %1\n\
+               %endmacro\n\
+               two [ rax+1 ] ,{a, b}\n\
+               tail x, y ,  z\n\
+               name a+b\n\
+               unknown a,,b\n\
+               two(1, 2)\n\
+               %1 a, b\n";
+    let (d, _) = doc(src);
+    assert_eq!(args_of(&d, 9).unwrap(), ["[ rax + 1 ]", "{a, b}"]);
+    assert_eq!(args_of(&d, 10).unwrap(), ["x", "raw:y ,  z"]);
+    assert_eq!(args_of(&d, 11), None, "stringified");
+    assert_eq!(args_of(&d, 12).unwrap(), ["a", "", "b"]);
+    assert_eq!(args_of(&d, 13), None, "single-line macro form");
+    assert_eq!(args_of(&d, 14), None, "macro name is a parameter");
+}
+
+#[test]
+fn include_names_and_computed_macros() {
+    assert_eq!(include_name("%include \"a/b.asm\""), Some("a/b.asm"));
+    assert_eq!(include_name("  %INCLUDE <x.inc> ; c"), Some("x.inc"));
+    assert_eq!(include_name("%include 'y.mac'"), Some("y.mac"));
+    assert_eq!(include_name("%include NAME"), None);
+    assert_eq!(include_name("%include \"%[d]/x\""), None);
+    for n in ["%1", "%{1}", "%$prefix%2", "foo%+bar", "v%1"] {
+        assert!(computed_name(n), "{n}");
+    }
+    for n in ["foo", "%%local", "%$ctx", "%$$outer", "SAVE"] {
+        assert!(!computed_name(n), "{n}");
+    }
+}
+
+#[test]
+fn macros_from_included_files() {
+    let dir = std::env::temp_dir().join(format!("reasm-include-test-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("sub")).unwrap();
+    std::fs::write(
+        dir.join("sub/defs.inc"),
+        "%macro SAVE 1\n%endmacro\n%macro AVX_INSTR 1\n%macro %1 2\n%endmacro\n%endmacro\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("top.inc"),
+        "%include \"sub/defs.inc\"\n%include \"top.inc\"\n",
+    )
+    .unwrap();
+    let main = dir.join("main.asm");
+    let src = "%include \"top.inc\"\n    SAVE rax\n";
+    let mut config = Config::default();
+    config.case.mnemonic = crate::config::CaseStyle::Upper;
+    let source = Source::new(src);
+    let mut diags = Vec::new();
+    let d = parse(&source, Some(&main), &config, &mut diags);
+    // `SAVE` is known (no N001), and the computed `%macro %1` (found two
+    // includes deep, despite the include cycle) freezes keyword case.
+    assert_eq!(codes(&diags), ["N003"], "{diags:?}");
+    assert!(d.keep_keyword_case);
+    assert!(
+        diags[0].message.contains("defs.inc:4"),
+        "{}",
+        diags[0].message
+    );
+
+    // Without a path, nothing is read: `SAVE` is a macro reasm can't
+    // see, so keyword case is still frozen, for that reason.
+    let mut diags = Vec::new();
+    let d = parse(&source, None, &config, &mut diags);
+    assert!(d.keep_keyword_case);
+    assert_eq!(codes(&diags), ["N001", "N003"]);
+    assert!(
+        diags[1].message.contains("line 2 calls a macro"),
+        "{}",
+        diags[1].message
+    );
+
+    // Only unseen macros or computed names freeze case.
+    let (d, _) = parse_with(
+        "%macro SAVE 1
+%endmacro
+    SAVE rax
+    MOV eax, 1
+",
+        &config,
+    );
+    assert!(!d.keep_keyword_case);
+    std::fs::remove_dir_all(&dir).unwrap();
 }

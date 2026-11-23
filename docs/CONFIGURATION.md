@@ -152,6 +152,14 @@ Values: `"preserve"` \| `"lower"` \| `"upper"`. Only tokens found in the
 dialect's case-insensitive keyword tables are changed (ADR-0008). Like
 nasmfmt, the default changes no case.
 
+A macro can shadow a keyword (`%macro RET 0` makes `RET` and `ret`
+different), so reasm keeps a keyword's case when a macro of that name, in
+any case, is defined in the file or in a file it includes. It changes no
+keyword case at all, except `preprocessor`, with note N003, when it can't
+know every macro name: a file calls a macro whose definition it can't find
+(set `nasm.include_paths` or `nasm.known_macros`), or a macro name is
+computed (`%macro %1`, as in `x86inc.asm`). See ADR-0022.
+
 | Key | Default | Applies to |
 |---|---|---|
 | `mnemonic` | `"preserve"` | Instruction mnemonics and prefixes. |
@@ -189,7 +197,7 @@ one newline.
 | `conditional_body_indent` | integer | `0` | Extra indent per level inside `%if*` … `%endif`. |
 | `rep_body_indent` | integer | `0` | Extra indent per level inside `%rep` … `%endrep`. |
 | `struc_body_indent` | integer | `0` | Extra indent inside `struc`/`endstruc`, `istruc`/`iend`. |
-| `format_macro_args` | bool | `false` | Apply `[operands]` rules to user macro calls. *Not implemented yet (M4); accepted and ignored.* |
+| `format_macro_args` | bool | `false` | Apply the `[operands]` spacing rules to user macro call arguments. Case is never changed. Calls are left as written when the macro (defined in this file) stringifies its arguments; arguments of greedy parameters (`1+`) stay as written. See ADR-0021 for what NASM keeps. |
 
 Block indent is added to every column on the line, labels included, except
 the trailing comment column and `%` lines with `indent = "zero"`. Lines
@@ -210,6 +218,7 @@ handle nesting at all, which is why all body indents default to 0.
 |---|---|---|---|
 | `known_macros` | array of strings | `[]` | Macro names defined outside the file, used for label detection (ADR-0019). Case-sensitive. |
 | `known_imacros` | array of strings | `[]` | Case-insensitive macros defined elsewhere. |
+| `include_paths` | array of strings | `[]` | Directories searched for `%include` files, like `nasm -I`, relative to the working directory. The including file's directory and the working directory are always searched first. reasm reads included files (recursively, at most 64) only to learn their macro names (ADR-0022). |
 
 ## `[diagnostics]`
 
@@ -298,6 +307,7 @@ format_macro_args = false
 [nasm]
 known_macros = []
 known_imacros = []
+include_paths = []
 
 [diagnostics]
 allow = []

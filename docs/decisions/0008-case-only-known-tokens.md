@@ -25,6 +25,10 @@ is a macro defined in the file or in `nasm.known_macros`/`known_imacros`
 `push` → `PUSH` unsafe). The classifier demotes such tokens to identifiers
 after its pre-pass.
 
+*Added in M4:* the pre-pass also reads included files, and when any
+macro name is computed (`%macro %1` in x264's `x86inc.asm`), no keyword
+case is changed at all, since any keyword could be a macro (ADR-0022).
+
 ## Consequences
 Missing table entries mean a keyword keeps its case, which is cosmetic. A
 wrong extra entry could change the case of a symbol, so table additions need a

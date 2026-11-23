@@ -5,6 +5,10 @@
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Document<'a> {
     pub lines: Vec<Line<'a>>,
+    /// Keywords must keep their case in this file, whatever `[case]`
+    /// says: some macro could shadow any of them (ADR-0008, ADR-0022).
+    /// Preprocessor directive names are not affected.
+    pub keep_keyword_case: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -161,8 +165,26 @@ pub enum BodyKind {
 pub enum Operands<'a> {
     /// Fully lexed: spacing may be normalized.
     Tokens(Vec<Token<'a>>),
-    /// Not lexed (macro arguments, preprocessor bodies) or not lexable:
-    /// laid out as one unit, text untouched (ADR-0006 level 2).
+    /// Not lexed (preprocessor bodies) or not lexable: laid out as one
+    /// unit, text untouched (ADR-0006 level 2).
+    Raw(&'a str),
+    /// Arguments of a macro call. `raw` is the whole list as written;
+    /// `args` is set when the dialect knows it is safe to respace the
+    /// list (`format_macro_args`, ADR-0021).
+    MacroArgs {
+        raw: &'a str,
+        args: Option<Vec<MacroArg<'a>>>,
+    },
+}
+
+/// One argument of a macro call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MacroArg<'a> {
+    /// Spacing may be normalized; case is never changed (a macro may
+    /// paste or compare its arguments case-sensitively).
+    Tokens(Vec<Token<'a>>),
+    /// Must stay as written (a greedy parameter that takes the rest of
+    /// the line, commas included).
     Raw(&'a str),
 }
 
@@ -170,7 +192,7 @@ impl Operands<'_> {
     pub fn is_empty(&self) -> bool {
         match self {
             Self::Tokens(t) => t.is_empty(),
-            Self::Raw(s) => s.is_empty(),
+            Self::Raw(s) | Self::MacroArgs { raw: s, .. } => s.is_empty(),
         }
     }
 }
@@ -275,6 +297,10 @@ pub struct CheckToken<'a> {
     pub kind: CheckKind,
     /// A slice of the checked text.
     pub text: &'a str,
+    /// Whitespace (or the start of the line) comes before it. The check
+    /// rejects whitespace inserted between tokens that touched, except
+    /// next to punctuation (ADR-0011).
+    pub space_before: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

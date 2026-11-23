@@ -6,11 +6,12 @@ use crate::dialect::Dialect;
 use crate::ir::{CheckKind, CheckLines, CheckToken};
 
 /// A logical line: its 1-based number, its token range, and where in the
-/// range its second physical line starts (when a `label:` line was joined).
-type Logical = (usize, std::ops::Range<usize>, Option<usize>);
+/// range each physical line after the first starts (when `label:` lines
+/// were joined to it).
+type Logical = (usize, std::ops::Range<usize>, Vec<usize>);
 
-/// Non-empty lines. A line that is only `label:` is joined to the next
-/// non-empty line, since splitting a label onto its own line
+/// Non-empty lines. Lines that are only `label:` are joined to the next
+/// non-empty line, since splitting labels onto their own lines
 /// (`labels.split_inline`) doesn't change the program. Empty lines have no
 /// tokens, so a joined line is still one contiguous token range.
 fn logical_lines(c: &CheckLines<'_>) -> Vec<Logical> {
@@ -26,14 +27,17 @@ fn logical_lines(c: &CheckLines<'_>) -> Vec<Logical> {
         let label_only = tokens.len() == 2
             && tokens[0].kind == CheckKind::Word
             && tokens[1].kind == CheckKind::Colon;
-        let (number, joined, second) = match pending.take() {
-            Some((n, r, _)) => (n, r.start..range.end, Some(2)),
-            None => (i + 1, range, None),
+        let line = match pending.take() {
+            Some((n, r, mut seconds)) => {
+                seconds.push(start - r.start);
+                (n, r.start..range.end, seconds)
+            }
+            None => (i + 1, range, Vec::new()),
         };
-        if label_only && joined.len() == 2 {
-            pending = Some((number, joined, None));
+        if label_only {
+            pending = Some(line);
         } else {
-            out.push((number, joined, second));
+            out.push(line);
         }
     }
     out.extend(pending);
@@ -46,6 +50,16 @@ fn same(dialect: &dyn Dialect, a: &CheckToken, b: &CheckToken) -> bool {
             || (a.kind == CheckKind::Word
                 && a.text.eq_ignore_ascii_case(b.text)
                 && dialect.case_insensitive(a.text)))
+}
+
+/// Whether a space may be inserted between touching tokens `a` and `b`:
+/// only next to punctuation the formatter spaces (`,` `[` `]` `(` `)`
+/// `:` `+` `-` `*`). Elsewhere the two may be one token to the assembler
+/// even if the dialect's lexer splits them (`v%{5}213%6`).
+fn separable(a: &CheckToken, b: &CheckToken) -> bool {
+    let punct =
+        |c: Option<char>| matches!(c, Some(',' | '[' | ']' | '(' | ')' | ':' | '+' | '-' | '*'));
+    punct(a.text.chars().last()) || punct(b.text.chars().next())
 }
 
 fn show(t: Option<&CheckToken>) -> String {
@@ -62,7 +76,7 @@ pub fn verify(dialect: &dyn Dialect, input: &str, output: &str) -> Result<(), St
     let cb = dialect.check_lines(output);
     let a = logical_lines(&ca);
     let b = logical_lines(&cb);
-    for (k, ((na, ra, _), (nb, rb, second))) in a.iter().zip(&b).enumerate() {
+    for (k, ((na, ra, _), (nb, rb, seconds))) in a.iter().zip(&b).enumerate() {
         let ta = &ca.tokens[ra.clone()];
         let tb = &cb.tokens[rb.clone()];
         if ta == tb {
@@ -73,6 +87,14 @@ pub fn verify(dialect: &dyn Dialect, input: &str, output: &str) -> Result<(), St
             match (ta.get(i), tb.get(j)) {
                 (None, None) => break,
                 (Some(x), Some(y)) if same(dialect, x, y) => {
+                    if y.space_before && !x.space_before && !separable(&ta[i - 1], x) {
+                        return Err(format!(
+                            "safety check failed: input line {na} has `{}{}` where output \
+                             line {nb} inserts a space",
+                            ta[i - 1].text,
+                            x.text
+                        ));
+                    }
                     i += 1;
                     j += 1;
                 }
@@ -82,7 +104,7 @@ pub fn verify(dialect: &dyn Dialect, input: &str, output: &str) -> Result<(), St
                     if i == j
                         && y.kind == CheckKind::Colon
                         && tb[j - 1].kind == CheckKind::Word
-                        && (j == 1 || Some(j - 1) == *second) =>
+                        && (j == 1 || seconds.contains(&(j - 1))) =>
                 {
                     j += 1;
                 }
@@ -132,6 +154,8 @@ mod tests {
         assert!(ok(".local:\nx equ 1", ".local:\nx: equ 1"));
         assert!(ok("nop ;x  ", "nop ; x"));
         assert!(ok("%DEFINE  X  1", "%define X  1"));
+        assert!(ok("a:\nb: times 2 db 1", "a:\nb:\n        times 2 db 1"));
+        assert!(ok("a:\nb:\nc db 1", "a:\nb:\nc:\n        db 1"));
     }
 
     #[test]
@@ -147,6 +171,9 @@ mod tests {
         assert!(!ok("foo: db 1", "foo db 1"));
         assert!(!ok("foo: mov es, x", "foo: mov: es, x"));
         assert!(!ok("%define X 1", "%define X  1"));
+        assert!(!ok("v%{5}213%6 x", "v%{5} 213%6 x"));
+        assert!(!ok("dd a<<b", "dd a << b"));
+        assert!(ok("dd a+b", "dd a + b"));
         let e = verify(&Nasm, "call Foo", "call foo").unwrap_err();
         assert!(e.contains("`Foo`") && e.contains("`foo`"), "{e}");
     }

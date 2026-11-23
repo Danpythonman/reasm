@@ -122,7 +122,10 @@ struct Body {
 enum Operands {
     Tokens(Vec<Token>),             // fully lexed: spacing may be normalized
     Raw(RawText),                   // couldn't lex fully: aligned as a unit, text untouched
+    MacroArgs { raw, args: Option<Vec<MacroArg>> },  // macro call; args set when respacing is safe (ADR-0021)
 }
+
+enum MacroArg { Tokens(Vec<Token>), Raw(RawText) }  // Raw: a greedy parameter's text
 
 struct Token { kind: TokenKind, text: String, space_before: bool }
 
@@ -277,6 +280,7 @@ differing token, leaves the file alone and exits 3.
   | W003 | warning | unbalanced block (`%endif` without `%if`, unclosed `%macro`, ...) |
   | N001 | note | unknown word at statement start, treated as a macro call |
   | N002 | note | `reasm: off` without `reasm: on` |
+  | N003 | note | keyword case left unchanged: a macro name is computed (`%macro %1`), possibly in an included file (ADR-0022) |
 - Rendered as `path:line:col: warning[W001]: message` on stderr (NFR-6).
 - Error types are hand-written enums, with no `anyhow`/`thiserror` (ADR-0012).
 
@@ -298,3 +302,8 @@ differing token, leaves the file alone and exits 3.
   100k lines of typical code (2.5 MB) in about 94 ms. NASM's test files
   repeated to 100k lines (6.9 MB, long data lines) take about 136 ms. Roughly
   a third of the time is the safety check.
+- Measured in M4 (2026-11-23, same method, against an M3 build on the same
+  machine): the golden-test inputs repeated to 100k lines (1.5 MB) take
+  90 ms (M3: 85 ms); 47k lines of FFmpeg's asm (1.4 MB) take 58 ms (M3:
+  52 ms). The cost is the stricter safety check (adjacency, ADR-0011).
+  Reading included files (ADR-0022) only happens for files with a path.

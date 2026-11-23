@@ -5,6 +5,7 @@ use crate::config::Config;
 use crate::diag::Diagnostic;
 use crate::ir::{CheckLines, Document};
 use crate::source::Source;
+use std::path::Path;
 
 pub mod check;
 pub mod classify;
@@ -30,10 +31,11 @@ impl Dialect for Nasm {
     fn parse<'a>(
         &self,
         source: &Source<'a>,
+        path: Option<&Path>,
         config: &Config,
         diags: &mut Vec<Diagnostic>,
     ) -> Document<'a> {
-        classify::parse(source, config, diags)
+        classify::parse(source, path, config, diags)
     }
 
     fn joinable(&self, a: &str, b: &str) -> bool {

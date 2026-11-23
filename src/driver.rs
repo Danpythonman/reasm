@@ -259,7 +259,7 @@ impl Job<'_> {
             Err(e) => return self.error(e),
         };
 
-        let formatted = format::format(text, &config, dialect);
+        let formatted = format::format(text, path, &config, dialect);
         if let Some(e) = &formatted.check_failure {
             let _ = writeln!(
                 self.err,

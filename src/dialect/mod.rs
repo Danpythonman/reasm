@@ -24,10 +24,13 @@ pub trait Dialect: Sync {
 
     /// Parses the source into the IR. Must return exactly one IR line per
     /// source line, and never fail: what can't be parsed becomes a
-    /// verbatim line plus a warning (ADR-0006).
+    /// verbatim line plus a warning (ADR-0006). `path` is the file's
+    /// location, if it has one; a dialect may read the files it includes
+    /// to learn their macro names (ADR-0022).
     fn parse<'a>(
         &self,
         source: &Source<'a>,
+        path: Option<&Path>,
         config: &Config,
         diags: &mut Vec<Diagnostic>,
     ) -> Document<'a>;

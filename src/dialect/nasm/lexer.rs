@@ -97,13 +97,19 @@ pub fn lex_into(text: &str, toks: &mut Vec<Tok>) -> Option<LexError> {
                 // Token pasting in macros: `start%1`, `.count_%+1`,
                 // `%1_end` are single names. Pieces that touch are joined;
                 // the result is a MacroParam if any piece is one.
+                // Digits after a parameter paste too: `v%{5}213%6`.
                 let pasteable = |k| matches!(k, TokenKind::Identifier | TokenKind::MacroParam);
                 match toks.last_mut() {
                     Some(prev)
                         if !space
                             && prev.end == start
                             && pasteable(prev.kind)
-                            && pasteable(kind) =>
+                            && (pasteable(kind)
+                                || (prev.kind == TokenKind::MacroParam
+                                    && matches!(
+                                        kind,
+                                        TokenKind::Number | TokenKind::Decorator
+                                    ))) =>
                     {
                         prev.end = end;
                         if kind == TokenKind::MacroParam {
@@ -384,6 +390,9 @@ mod tests {
             [(K::MacroParam, "start%1"), (K::Colon, ":")]
         );
         assert_eq!(kinds("%1_end"), [(K::MacroParam, "%1_end")]);
+        assert_eq!(kinds("v%{5}213%6"), [(K::MacroParam, "v%{5}213%6")]);
+        assert_eq!(kinds("%%top_{%$v}%1:")[0], (K::MacroParam, "%%top_{%$v}%1"));
+        assert_eq!(kinds("zmm1{k1}")[1], (K::Decorator, "{k1}"));
         assert_eq!(kinds("a %1")[1], (K::MacroParam, "%1"));
     }
 

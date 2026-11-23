@@ -30,7 +30,7 @@ fn golden_cases() {
             .unwrap_or_else(|e| panic!("{name}: bad reasm.toml: {e}"));
         let input = fs::read_to_string(dir.join("input.asm"))
             .unwrap_or_else(|e| panic!("{name}: input.asm: {e}"));
-        let out = format(&input, &config, &Nasm);
+        let out = format(&input, None, &config, &Nasm);
         if let Some(e) = &out.check_failure {
             failures.push(format!("{name}: {e}"));
             continue;
@@ -47,7 +47,7 @@ fn golden_cases() {
             ));
             continue;
         }
-        let again = format(&out.text, &config, &Nasm);
+        let again = format(&out.text, None, &config, &Nasm);
         if again.text != out.text || again.check_failure.is_some() {
             failures.push(format!(
                 "{name}: not idempotent\n--- first\n{}--- second\n{}",

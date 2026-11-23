@@ -314,7 +314,11 @@ impl Normalizer<'_> {
             self.push_case(&mut text, p);
             prev = Some(p);
         }
-        if !text.is_empty() {
+        // `{evex}vpmulhrsw` stays joined: a space is only added where the
+        // source had one (ADR-0011).
+        if let Some(p) = prev
+            && (body.keyword.space_before || !self.dialect.joinable(p.text, body.keyword.text))
+        {
             text.push(' ');
         }
         self.push_case(&mut text, &body.keyword);
@@ -322,6 +326,11 @@ impl Normalizer<'_> {
         let operands = match &body.operands {
             ir::Operands::Raw("") => None,
             ir::Operands::Raw(raw) => Some(raw.to_string()),
+            ir::Operands::MacroArgs { raw: "", .. } => None,
+            ir::Operands::MacroArgs {
+                args: Some(args), ..
+            } if self.cfg.preprocessor.format_macro_args => Some(self.macro_args(args)),
+            ir::Operands::MacroArgs { raw, .. } => Some(raw.to_string()),
             ir::Operands::Tokens(t) if t.is_empty() => None,
             // Directive arguments are whitespace-separated words to NASM
             // (`section __LD,__compact_unwind`), so only runs of spaces
@@ -331,7 +340,7 @@ impl Normalizer<'_> {
             {
                 Some(self.as_written(t))
             }
-            ir::Operands::Tokens(t) => Some(self.operands(t)),
+            ir::Operands::Tokens(t) => Some(self.operands(t, true)),
         };
 
         if body.bracketed {
@@ -355,6 +364,31 @@ impl Normalizer<'_> {
         (KeywordCell { text, column, gap }, operands)
     }
 
+    /// A macro argument list with the `[operands]` spacing rules inside
+    /// each argument and around the separating commas. Case is kept
+    /// (ADR-0021).
+    fn macro_args(&self, args: &[ir::MacroArg]) -> String {
+        let o = &self.cfg.operands;
+        let mut out = String::new();
+        for (i, arg) in args.iter().enumerate() {
+            let text = match arg {
+                ir::MacroArg::Tokens(t) => self.operands(t, false),
+                ir::MacroArg::Raw(r) => r.to_string(),
+            };
+            if i > 0 {
+                if o.space_before_comma {
+                    out.push(' ');
+                }
+                out.push(',');
+                if o.space_after_comma && !text.is_empty() {
+                    out.push(' ');
+                }
+            }
+            out.push_str(&text);
+        }
+        out
+    }
+
     /// Tokens with a single space wherever the source had whitespace.
     fn as_written(&self, tokens: &[Token]) -> String {
         let mut out = String::new();
@@ -370,14 +404,37 @@ impl Normalizer<'_> {
     /// Renders an operand list with the `[operands]` spacing rules
     /// (CONFIGURATION.md). A space is only ever removed when the dialect
     /// confirms the two tokens still read back the same.
-    fn operands(&self, tokens: &[Token]) -> String {
+    fn operands(&self, tokens: &[Token], case: bool) -> String {
         let o = &self.cfg.operands;
         let mut out = String::new();
         let mut bracket_depth = 0u32;
         // Whether the previous token was a unary `+`/`-`.
         let mut prev_unary = false;
+        // Nesting inside `name(...)`: a single-line macro call, whose
+        // arguments NASM can stringify with `%str` (spacing and case
+        // included), so they stay as written (ADR-0021).
+        let mut call_depth = 0u32;
         for (i, t) in tokens.iter().enumerate() {
             let prev = i.checked_sub(1).map(|p| &tokens[p]);
+            if t.kind == TokenKind::OpenParen
+                && (call_depth > 0
+                    || prev.is_some_and(|p| {
+                        matches!(p.kind, TokenKind::Identifier | TokenKind::MacroParam)
+                    }))
+            {
+                call_depth += 1;
+            }
+            if call_depth > 0 {
+                if t.space_before && prev.is_some() {
+                    out.push(' ');
+                }
+                out.push_str(t.text);
+                if t.kind == TokenKind::CloseParen {
+                    call_depth -= 1;
+                }
+                prev_unary = false;
+                continue;
+            }
             let in_memory = bracket_depth > 0;
             let unary = matches!(t.kind, TokenKind::Plus | TokenKind::Minus) && unary_after(prev);
             if let Some(p) = prev {
@@ -423,7 +480,11 @@ impl Normalizer<'_> {
                     out.push(' ');
                 }
             }
-            self.push_case(&mut out, t);
+            if case {
+                self.push_case(&mut out, t);
+            } else {
+                out.push_str(t.text);
+            }
             match t.kind {
                 TokenKind::OpenBracket => bracket_depth += 1,
                 TokenKind::CloseBracket => bracket_depth = bracket_depth.saturating_sub(1),
