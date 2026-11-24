@@ -121,5 +121,7 @@ request:
 | NFR | `tools/check-nfr.py --budget-ms 300` on the release build |
 | Corpus | `tools/fetch-corpus.sh` (cached), then `tools/corpus/run.sh` with the default and both full configs |
 
-`.gitattributes` marks `tests/cases/**` as binary, so Git on Windows
-doesn't convert the line endings the golden tests compare.
+`.gitattributes` checks out every file with LF endings, so the docs
+tests (`tests/docs.rs`) see the same text on Windows, and marks
+`tests/cases/**` as binary, so the golden tests' CRLF and BOM cases stay
+byte for byte.

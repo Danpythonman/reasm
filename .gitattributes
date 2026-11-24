@@ -1,2 +1,5 @@
+# Check out LF everywhere, so tests that compare docs with the code's
+# output (tests/docs.rs) behave the same on Windows.
+* text=auto eol=lf
 # Golden-test files are compared byte for byte, CRLF and BOM included.
 tests/cases/** -text
