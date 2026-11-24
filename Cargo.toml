@@ -7,6 +7,19 @@ description = "A fast, configurable formatter for assembly language (NASM)"
 license = "MIT"
 authors = ["Daniel Di Giovanni"]
 readme = "README.md"
+repository = "https://github.com/Danpythonman/reasm"
+homepage = "https://github.com/Danpythonman/reasm"
+include = [
+    "/src/",
+    "/tests/*.rs",
+    "/tests/cases/",
+    "/docs/",
+    "/Cargo.toml",
+    "/Cargo.lock",
+    "/LICENSE",
+    "/README.md",
+    "/THIRD_PARTY_NOTICES",
+]
 keywords = ["assembly", "nasm", "formatter", "x86"]
 categories = ["development-tools", "command-line-utilities"]
 
