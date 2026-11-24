@@ -31,3 +31,4 @@ question), **Superseded by ADR-NNNN**.
 | [0020](0020-nasmfmt-default-style.md) | Default style = nasmfmt, except local labels, sections and `%` lines at column 0 | Accepted |
 | [0021](0021-macro-arguments.md) | Macro arguments: respace only where NASM drops the spacing; never change case | Accepted |
 | [0022](0022-include-pre-pass.md) | Pre-pass follows `%include`; computed macro names freeze keyword case | Accepted |
+| [0023](0023-diff-and-verify.md) | `--diff` with a built-in patience/LCS diff; `--verify` assembles both texts with nasm | Accepted |

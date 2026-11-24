@@ -263,3 +263,85 @@ fn help_and_version() {
         format!("reasm {}", env!("CARGO_PKG_VERSION"))
     );
 }
+
+fn have_nasm() -> bool {
+    Command::new("nasm").arg("-v").output().is_ok()
+}
+
+#[test]
+fn diff_mode_prints_a_unified_diff_and_writes_nothing() {
+    let t = TempDir::new();
+    t.write("a.asm", MESSY);
+    t.write("b.asm", CLEAN);
+    let o = reasm(&t.0, &["--diff", "a.asm", "b.asm"], None);
+    assert_eq!(code(&o), 1, "{}", stderr(&o));
+    assert_eq!(
+        stdout(&o),
+        "--- a.asm\t(original)\n+++ a.asm\t(formatted)\n\
+         @@ -1,3 +1 @@\n-mov eax, 1   \n-\n-\n+        mov eax, 1\n"
+    );
+    assert_eq!(t.read("a.asm"), MESSY);
+    let o = reasm(&t.0, &["--diff", "b.asm"], None);
+    assert_eq!((code(&o), stdout(&o)), (0, String::new()));
+    // stdin uses --stdin-filepath (or <stdin>) as the name.
+    let o = reasm(&t.0, &["--diff"], Some(MESSY));
+    assert!(stdout(&o).starts_with("--- <stdin>\t"), "{}", stdout(&o));
+    let o = reasm(&t.0, &["--diff", "--check", "a.asm"], None);
+    assert_eq!(code(&o), 2);
+}
+
+#[test]
+fn verify_needs_nasm() {
+    let t = TempDir::new();
+    t.write("a.asm", MESSY);
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_reasm"));
+    let o = cmd
+        .current_dir(&t.0)
+        .env("PATH", "")
+        .args(["--verify", "a.asm"])
+        .output()
+        .unwrap();
+    assert_eq!(code(&o), 2);
+    assert!(stderr(&o).contains("--verify needs nasm"), "{}", stderr(&o));
+    assert_eq!(t.read("a.asm"), MESSY);
+}
+
+#[test]
+fn verify_assembles_and_warns_when_it_cannot_compare() {
+    if !have_nasm() {
+        eprintln!("nasm not found; skipping");
+        return;
+    }
+    let t = TempDir::new();
+    t.write("inc/defs.inc", "%define VAL 7\n");
+    t.write("src/a.asm", "%include \"defs.inc\"\nmov eax,VAL\n");
+    t.write("src/b.asm", "call nowhere\n");
+    t.write("reasm.toml", "[nasm]\ninclude_paths = [\"inc\"]\n");
+    // `--verify` takes no separate value, so `src` is a path.
+    let o = reasm(&t.0, &["--verify", "src"], None);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    assert_eq!(
+        t.read("src/a.asm"),
+        "%include \"defs.inc\"\n        mov eax, VAL\n"
+    );
+    assert!(
+        stderr(&o).contains("b.asm: warning[W004]: not verified"),
+        "{}",
+        stderr(&o)
+    );
+    // The warning can be silenced and denied like any other.
+    t.write("src/b.asm", "call nowhere\n");
+    let o = reasm(
+        &t.0,
+        &["--verify=elf64", "--allow", "W004", "src/b.asm"],
+        None,
+    );
+    assert_eq!((code(&o), stderr(&o)), (0, String::new()));
+    t.write("src/b.asm", "call nowhere\n");
+    let o = reasm(
+        &t.0,
+        &["--verify", "--deny-warnings", "--check", "src/b.asm"],
+        None,
+    );
+    assert_eq!(code(&o), 2);
+}

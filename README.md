@@ -5,7 +5,7 @@ small binary. The first supported dialect is **NASM** (x86 / x86-64). The design
 keeps dialect-specific code separate from the shared formatter so that more
 dialects (GAS/AT&T, MASM, ...) can be added later.
 
-> **Status:** early development (milestone M4 of [the roadmap](docs/ROADMAP.md)).
+> **Status:** early development (milestone M5 of [the roadmap](docs/ROADMAP.md)).
 > Formatting works with every option in CONFIGURATION.md except
 > `format_macro_args`. A safety check refuses to write a file if anything
 > other than whitespace, keyword case or a label colon would change. On
@@ -18,6 +18,8 @@ dialects (GAS/AT&T, MASM, ...) can be added later.
 cargo install --path .
 reasm file.asm src/            # format in place
 reasm --check src/             # CI: exit 1 if anything would change
+reasm --diff src/              # show what would change, as a unified diff
+reasm --verify src/            # also check with nasm that the output assembles the same
 reasm --stdin-filepath f.asm < f.asm   # editors
 reasm --print-config default > reasm.toml
 ```

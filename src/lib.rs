@@ -3,10 +3,12 @@
 //! The binary is a thin wrapper around [`driver`]. Library users can call
 //! [`format_str`] directly (EXT-4).
 
+pub mod assemble;
 pub mod cli;
 pub mod config;
 pub mod diag;
 pub mod dialect;
+pub mod diff;
 pub mod driver;
 pub mod format;
 pub mod ir;

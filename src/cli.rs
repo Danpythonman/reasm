@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 use clap::{Parser, ValueEnum};
 
+use crate::assemble::Assembler;
 use crate::config::{Config, Override};
 use crate::driver::{self, ConfigChoice, Exit, Input, Mode, Options, Verbosity};
 
@@ -25,8 +26,19 @@ pub struct Args {
     pub paths: Vec<PathBuf>,
 
     /// Write nothing; list files that would change and exit 1 if any would.
-    #[arg(long, conflicts_with = "stdout")]
+    #[arg(long, conflicts_with_all = ["stdout", "diff"])]
     pub check: bool,
+
+    /// Write nothing; print a unified diff of each file that would change
+    /// and exit 1 if any would.
+    #[arg(long, conflicts_with = "stdout")]
+    pub diff: bool,
+
+    /// Also assemble the original and formatted text with nasm and compare
+    /// the output; a file that differs is left unchanged. FORMAT defaults to
+    /// elf64, then bin.
+    #[arg(long, value_name = "FORMAT", num_args = 0..=1, require_equals = true)]
+    pub verify: Option<Option<String>>,
 
     /// Print formatted output instead of writing files.
     #[arg(long)]
@@ -107,6 +119,8 @@ pub fn run(args: Args, out: &mut dyn Write, err: &mut dyn Write) -> Exit {
     };
     let mode = if args.check {
         Mode::Check
+    } else if args.diff {
+        Mode::Diff
     } else if args.stdout {
         Mode::Stdout
     } else {
@@ -127,6 +141,7 @@ pub fn run(args: Args, out: &mut dyn Write, err: &mut dyn Write) -> Exit {
         allow: args.allow.clone(),
         deny_warnings: args.deny_warnings,
         verbosity,
+        verify: None,
     };
 
     if let Some(which) = args.print_config {
@@ -147,6 +162,17 @@ pub fn run(args: Args, out: &mut dyn Write, err: &mut dyn Write) -> Exit {
             }
             Err(e) => fail(e.to_string()),
         };
+    }
+
+    let mut opts = opts;
+    if let Some(format) = &args.verify {
+        let asm = Assembler::new(format.as_deref());
+        if let Err(e) = asm.probe() {
+            return fail(format!(
+                "--verify needs nasm on PATH: cannot run `nasm`: {e}"
+            ));
+        }
+        opts.verify = Some(asm);
     }
 
     let stdin_requested = args.paths.is_empty() || args.paths.iter().any(|p| p.as_os_str() == "-");

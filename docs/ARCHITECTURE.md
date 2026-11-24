@@ -36,6 +36,8 @@ reasm/
 │   ├── driver/              # file discovery, config resolution per file, I/O, check/diff
 │   ├── config/              # option structs (incl. each dialect's table, e.g. [nasm]), TOML loading, --set, discovery
 │   ├── diag/                # Diagnostic, Severity, Span, rendering
+│   ├── diff.rs              # unified diffs for --diff (ADR-0023)
+│   ├── assemble.rs          # --verify: run nasm on both texts, compare (ADR-0023)
 │   ├── source/              # Source text, line splitting, line-ending detection
 │   ├── ir/                  # Document, Line, Label, Body, Token, TokenKind, Block
 │   ├── format/
@@ -60,7 +62,7 @@ reasm/
 Dependency direction (an arrow means "may use"):
 
 ```
-cli → driver → { config, dialect, format, diag, source }
+cli → driver → { config, dialect, format, diag, source, diff, assemble }
 dialect → { ir, diag, source, config (reads its own table only) }
 config  → dialect (only to validate the `dialect` name)
 
@@ -265,6 +267,8 @@ differing token, leaves the file alone and exits 3.
 - Writes are atomic: write `file.reasm.tmp`, then rename over the original.
   Permissions are kept.
 - Unchanged files are never rewritten, so their mtime stays the same.
+- `--diff` and `--verify` are described in ADR-0023. `--verify` runs
+  after the safety check and can only keep a file unchanged.
 - Files are formatted one after another in 1.0. NFR-2 is met without threads.
   Parallelism can come later with `std::thread::scope`.
 
@@ -281,6 +285,7 @@ differing token, leaves the file alone and exits 3.
   | N001 | note | unknown word at statement start, treated as a macro call |
   | N002 | note | `reasm: off` without `reasm: on` |
   | N003 | note | keyword case left unchanged: a macro name is computed (`%macro %1`), possibly in an included file (ADR-0022) |
+  | W004 | warning | `--verify` couldn't compare: the original doesn't assemble on its own (ADR-0023) |
 - Rendered as `path:line:col: warning[W001]: message` on stderr (NFR-6).
 - Error types are hand-written enums, with no `anyhow`/`thiserror` (ADR-0012).
 
@@ -307,3 +312,7 @@ differing token, leaves the file alone and exits 3.
   90 ms (M3: 85 ms); 47k lines of FFmpeg's asm (1.4 MB) take 58 ms (M3:
   52 ms). The cost is the stricter safety check (adjacency, ADR-0011).
   Reading included files (ADR-0022) only happens for files with a path.
+- M5 (2026-11-23): `tools/check-nfr.py` measures the same 100k lines of
+  golden inputs at a median of 90 ms, and CI runs it on every push
+  (TESTING §5). `--verify` adds two nasm runs per changed file and isn't
+  part of NFR-2.

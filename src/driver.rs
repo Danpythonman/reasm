@@ -6,10 +6,15 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
+use crate::assemble::{Assembler, Verdict};
 use crate::config::{self, Config, ConfigError, Override};
-use crate::diag::Severity;
+use crate::diag::{Diagnostic, Severity};
 use crate::dialect;
 use crate::format;
+
+/// Warning code: `--verify` couldn't compare because the original doesn't
+/// assemble on its own (ADR-0023).
+pub const VERIFY_SKIPPED: &str = "W004";
 
 /// Exit codes (CLI.md). When several apply, the highest wins.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -28,6 +33,8 @@ pub enum Mode {
     Check,
     /// Print formatted output to stdout.
     Stdout,
+    /// Write nothing; print a unified diff of files that would change.
+    Diff,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -53,6 +60,8 @@ pub struct Options {
     pub allow: Vec<String>,
     pub deny_warnings: bool,
     pub verbosity: Verbosity,
+    /// `--verify`: assemble both texts and compare (ADR-0023).
+    pub verify: Option<Assembler>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -231,6 +240,88 @@ impl Job<'_> {
         files.extend(found);
     }
 
+    /// Prints a diagnostic if it isn't silenced, and raises the exit code
+    /// for errors and denied warnings.
+    fn report(&mut self, d: &Diagnostic, config: &Config, display: &str) {
+        let allowed = self
+            .opts
+            .allow
+            .iter()
+            .chain(&config.diagnostics.allow)
+            .any(|a| a == d.code);
+        let shown = match d.severity {
+            Severity::Error => true,
+            Severity::Warning => !allowed && self.opts.verbosity >= Verbosity::Normal,
+            Severity::Note => !allowed && self.opts.verbosity >= Verbosity::Verbose,
+        };
+        if shown {
+            let _ = writeln!(self.err, "{}", d.render(display));
+        }
+        let deny = self.opts.deny_warnings || config.diagnostics.deny_warnings;
+        if d.severity == Severity::Error || (d.severity == Severity::Warning && deny && !allowed) {
+            self.raise(Exit::UserError);
+        }
+    }
+
+    /// `--verify` (ADR-0023). Returns false when the formatted text must
+    /// not be used: it assembles differently, or nasm couldn't be run.
+    fn verify(
+        &mut self,
+        asm: &Assembler,
+        original: &str,
+        formatted: &str,
+        path: Option<&Path>,
+        display: &str,
+        config: &Config,
+    ) -> bool {
+        let failed = |what: String| {
+            format!(
+                "reasm: internal error: {display}: --verify failed: {what}. The file was \
+                 left unchanged; please report this bug with the input that caused it"
+            )
+        };
+        match asm.compare(original, formatted, path) {
+            Ok(Verdict::Same { .. }) => true,
+            Ok(Verdict::OriginalFails { message }) => {
+                let d = Diagnostic {
+                    severity: Severity::Warning,
+                    code: VERIFY_SKIPPED,
+                    line: 0,
+                    col: 0,
+                    message: format!(
+                        "not verified: the original doesn't assemble on its own with \
+                         `nasm -f {}` ({message})",
+                        asm.formats.join("` or `-f ")
+                    ),
+                };
+                self.report(&d, config, display);
+                true
+            }
+            Ok(Verdict::Differs { format, offset }) => {
+                let msg = failed(format!(
+                    "the formatted text assembles differently with `nasm -f {format}` \
+                     (first difference at byte {offset})"
+                ));
+                let _ = writeln!(self.err, "{msg}");
+                self.raise(Exit::Internal);
+                false
+            }
+            Ok(Verdict::FormattedFails { format, message }) => {
+                let msg = failed(format!(
+                    "the original assembles with `nasm -f {format}` but the formatted \
+                     text doesn't ({message})"
+                ));
+                let _ = writeln!(self.err, "{msg}");
+                self.raise(Exit::Internal);
+                false
+            }
+            Err(e) => {
+                self.error(format_args!("{display}: --verify: cannot run nasm: {e}"));
+                false
+            }
+        }
+    }
+
     fn format_one(
         &mut self,
         bytes: &[u8],
@@ -269,30 +360,28 @@ impl Job<'_> {
             self.raise(Exit::Internal);
         }
 
-        let deny = self.opts.deny_warnings || config.diagnostics.deny_warnings;
         for d in &formatted.diagnostics {
-            let allowed = self
-                .opts
-                .allow
+            self.report(d, &config, display);
+        }
+
+        let mut result = formatted.text.as_str();
+        if result != text
+            && formatted.check_failure.is_none()
+            && let Some(asm) = &self.opts.verify
+        {
+            let mut asm = asm.clone();
+            asm.include_dirs = config
+                .nasm
+                .include_paths
                 .iter()
-                .chain(&config.diagnostics.allow)
-                .any(|a| a == d.code);
-            let shown = match d.severity {
-                Severity::Error => true,
-                Severity::Warning => !allowed && self.opts.verbosity >= Verbosity::Normal,
-                Severity::Note => !allowed && self.opts.verbosity >= Verbosity::Verbose,
-            };
-            if shown {
-                let _ = writeln!(self.err, "{}", d.render(display));
-            }
-            let fails = d.severity == Severity::Error
-                || (d.severity == Severity::Warning && deny && !allowed);
-            if fails {
-                self.raise(Exit::UserError);
+                .map(PathBuf::from)
+                .collect();
+            if !self.verify(&asm, text, result, path, display, &config) {
+                result = text;
             }
         }
 
-        let changed = formatted.text != text;
+        let changed = result != text;
         match (self.opts.mode, target) {
             (Mode::Check, _) => {
                 if changed {
@@ -300,13 +389,20 @@ impl Job<'_> {
                     self.raise(Exit::WouldChange);
                 }
             }
+            (Mode::Diff, _) => {
+                if changed {
+                    let _ = out
+                        .write_all(crate::diff::unified(text, result, display, display).as_bytes());
+                    self.raise(Exit::WouldChange);
+                }
+            }
             (Mode::Stdout, _) | (Mode::Write, Target::Stdin) => {
-                if let Err(e) = out.write_all(formatted.text.as_bytes()) {
+                if let Err(e) = out.write_all(result.as_bytes()) {
                     self.error(format_args!("cannot write output: {e}"));
                 }
             }
             (Mode::Write, Target::File(file)) => {
-                if changed && let Err(e) = write_atomic(file, formatted.text.as_bytes()) {
+                if changed && let Err(e) = write_atomic(file, result.as_bytes()) {
                     self.error(format_args!("{display}: cannot write: {e}"));
                 }
             }

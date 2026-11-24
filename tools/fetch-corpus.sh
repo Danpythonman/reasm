@@ -1,5 +1,6 @@
 #!/bin/sh
-# Downloads pinned revisions of NASM-heavy projects into tests/corpus/
+# Downloads pinned revisions of NASM-heavy projects, and NASM 2.16.01's own
+# test suite, into tests/corpus/
 # (git-ignored; TESTING.md §4). Only the x86 assembly directories are
 # checked out (sparse, shallow), so this needs ~30 MB.
 #
@@ -34,3 +35,5 @@ fetch ffmpeg https://github.com/FFmpeg/FFmpeg.git \
     3a0867c2bfda4a4d4309ca1a8cbdc6175e67f587 '/libavcodec/x86/*.asm' '/libavutil/x86/*.asm' \
     '/libavfilter/x86/*.asm' '/libswscale/x86/*.asm' '/libswresample/x86/*.asm' \
     '/libavcodec/x86/*/*.asm'
+fetch nasm https://github.com/netwide-assembler/nasm.git \
+    d41598b3359d39c14e80f56bd8c3749f1d097932 '/test/'

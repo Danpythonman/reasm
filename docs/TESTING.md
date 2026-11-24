@@ -11,10 +11,10 @@ changes what the assembler produces (COR-1) and is idempotent (COR-2).
 | Golden tests | `tests/cases/<name>/` | end-to-end: `input.asm` + optional `reasm.toml` → `expected.asm` |
 | Idempotency | automatic, every golden test | `format(expected) == expected` |
 | Safety check | automatic, every golden test | the token-stream equivalence check (ADR-0011) passes |
-| Assembly equivalence | `tests/assemble.rs` | for each golden input that assembles: `nasm -f elf64` on input and output, compare object bytes |
+| Assembly equivalence | `tests/assemble.rs` | for each golden case: `input.asm` and `expected.asm` assemble to identical bytes (22 of 36 cases at M5) |
 | Corpus | `tests/corpus/` (fetched, not vendored) | real-world NASM files, idempotency and assembly equivalence |
 | Fuzzing | `fuzz/` (cargo-fuzz), post-1.0 | no panics, idempotency, safety check holds |
-| CLI tests | `tests/cli.rs` | exit codes, `--check`, stdin mode, config discovery, `--set` |
+| CLI tests | `tests/cli.rs` | exit codes, `--check`, `--diff`, `--verify`, stdin mode, config discovery, `--set` |
 
 ## 2. Golden test format
 
@@ -37,23 +37,28 @@ safety check fails.
 
 ## 3. Assembly equivalence details
 
-- The test assembles with `nasm -f elf64 -o out.o file.asm`, using the
-  **same file name** in two separate temporary directories, because the source
-  name ends up in the object file. `-f bin` is also tried for inputs that
-  `elf64` rejects.
+- The test uses the same code as `--verify` (`src/assemble.rs`,
+  ADR-0023): `nasm -f elf64`, then `-f bin` for inputs that `elf64`
+  rejects, with the **same file name** in two separate temporary
+  directories, because the source name ends up in the object file.
 - The test is skipped (and reports that) when `nasm` isn't on PATH. In CI,
   nasm is installed so it always runs.
-- Inputs that don't assemble (fragments, macro-only files) are marked with
-  `; reasm-test: no-assemble` on the first line.
+- A case whose input doesn't assemble on its own (undefined symbols,
+  fragments, deliberately broken lines) has a `no-assemble` file in its
+  directory giving the reason. The test fails if a marked case does
+  assemble, or an unmarked one doesn't, so the list stays accurate.
 
 ## 4. Corpus
 
-`tools/fetch-corpus.sh` downloads pinned revisions of x264, dav1d 1.5.5 and
-FFmpeg 7.1.5 into `tests/corpus/` (git-ignored, about 12 MB: only the x86
-asm directories are checked out). `tools/corpus/run.sh` runs
+`tools/fetch-corpus.sh` downloads pinned revisions of x264, dav1d 1.5.5,
+FFmpeg 7.1.5 and NASM 2.16.01's `test/` directory into `tests/corpus/`
+(git-ignored, about 15 MB: only the asm directories are checked out). `tools/corpus/run.sh` runs
 `tools/corpus/check_corpus.py` on each project with its include paths and
 defines (stand-in `config.asm` files are in `tools/corpus/<project>/`),
-under the default config plus any extra configs given as arguments.
+under the default config plus any extra configs given as arguments. The
+two configs that turn on almost every option (all-upper and all-lower
+case, every spacing and alignment option) are in
+`tools/corpus/configs/`, and CI runs all three on every push.
 
 `check_corpus.py` copies a tree, formats every `.asm`/`.inc`/`.mac` file
 in the copy (so included files are formatted too), and checks the safety
@@ -97,8 +102,24 @@ object bytes in both trees. It exits 1 on any failure. Candidates
 
 ## 5. Performance
 
-`benches/`, or `tools/bench.sh` with `hyperfine`, formats a generated
-100k-line file and checks NFR-2. M3 numbers are in ARCHITECTURE §8: 94 ms for
-100k lines of typical code, which meets NFR-2 with little margin. Long-line
-input (69 bytes/line) takes 136 ms. Turning this into a CI check is M5 work. Binary size (NFR-1) is checked in CI with
-`stat` on the stripped release binary.
+`tools/check-nfr.py` checks the release binary's size (NFR-1, under
+2 MiB) and times 15 whole-process runs on 100,000 lines built from the
+golden inputs that assemble (NFR-2: median under 100 ms). Measured
+numbers are in ARCHITECTURE §8; at M5 it's 1.54 MiB and 90 ms. CI runs it
+with a 300 ms budget, because shared runners are slower and noisier; that
+still catches large regressions.
+
+## 6. Continuous integration
+
+`.github/workflows/ci.yml` runs on every push to `main` and every pull
+request:
+
+| Job | What it runs |
+|---|---|
+| Test (Linux, macOS, Windows) | `cargo fmt --check` (Linux), `cargo clippy --all-targets`, `cargo test`, with nasm installed so the assembly tests run |
+| Minimum Rust version | `cargo build` with the `rust-version` from `Cargo.toml` (NFR-4) |
+| NFR | `tools/check-nfr.py --budget-ms 300` on the release build |
+| Corpus | `tools/fetch-corpus.sh` (cached), then `tools/corpus/run.sh` with the default and both full configs |
+
+`.gitattributes` marks `tests/cases/**` as binary, so Git on Windows
+doesn't convert the line endings the golden tests compare.

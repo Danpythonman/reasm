@@ -1,0 +1,81 @@
+# Continuous integration (TESTING.md §5, ROADMAP M5).
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      # The assembly-equivalence tests need nasm; without it they skip.
+      - uses: ilammy/setup-nasm@v1
+      - name: Format
+        if: runner.os == 'Linux'
+        run: cargo fmt --check
+      - name: Clippy
+        run: cargo clippy --all-targets
+      - name: Tests
+        run: cargo test
+
+  msrv:
+    name: Minimum Rust version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the rust-version from Cargo.toml
+        run: |
+          msrv=$(sed -n 's/^rust-version = "\(.*\)"/\1/p' Cargo.toml)
+          rustup toolchain install "$msrv" --profile minimal
+          rustup default "$msrv"
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --locked
+
+  nfr:
+    name: Binary size and speed (NFR-1, NFR-2)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --locked
+      # Shared CI runners are slower and noisier than a desktop, so the
+      # time budget here is 3x NFR-2's 100 ms. It still catches large
+      # regressions; NFR-2 itself is measured locally (ARCHITECTURE §8).
+      - run: python3 -I tools/check-nfr.py --budget-ms 300
+
+  corpus:
+    name: Corpus (x264, dav1d, FFmpeg, NASM tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: ilammy/setup-nasm@v1
+      - uses: actions/cache@v4
+        with:
+          path: tests/corpus
+          key: corpus-${{ hashFiles('tools/fetch-corpus.sh') }}
+      - run: tools/fetch-corpus.sh
+      - run: cargo build --release --locked
+      - name: Format, check idempotency and compare object files
+        run: |
+          tools/corpus/run.sh target/release/reasm \
+            "$(cat tools/corpus/configs/upper)" "$(cat tools/corpus/configs/lower)"

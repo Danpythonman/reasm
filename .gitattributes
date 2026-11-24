@@ -1,0 +1,2 @@
+# Golden-test files are compared byte for byte, CRLF and BOM included.
+tests/cases/** -text
